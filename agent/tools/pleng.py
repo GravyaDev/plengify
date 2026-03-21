@@ -20,15 +20,23 @@ import sys
 import requests
 
 API = os.environ.get("PLATFORM_API_URL", "http://platform-api:8000")
+API_KEY = os.environ.get("PLENG_API_KEY", "")
+
+
+def _headers() -> dict:
+    h = {"Content-Type": "application/json"}
+    if API_KEY:
+        h["X-API-Key"] = API_KEY
+    return h
 
 
 def _get(path: str) -> dict:
-    r = requests.get(f"{API}{path}", timeout=30)
+    r = requests.get(f"{API}{path}", headers=_headers(), timeout=30)
     return r.json()
 
 
 def _post(path: str, data: dict = None) -> dict:
-    r = requests.post(f"{API}{path}", json=data or {}, timeout=300)
+    r = requests.post(f"{API}{path}", json=data or {}, headers=_headers(), timeout=300)
     return r.json()
 
 

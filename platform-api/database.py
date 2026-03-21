@@ -35,6 +35,11 @@ def init():
                 FOREIGN KEY (site_id) REFERENCES sites(id)
             );
             CREATE INDEX IF NOT EXISTS idx_site_logs_site ON site_logs(site_id);
+
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
         """)
 
 
@@ -115,3 +120,27 @@ def get_site_logs(site_id: str, limit: int = 50) -> list[dict]:
             (site_id, limit),
         )
         return [dict(r) for r in c.fetchall()]
+
+
+# ── Settings / API Key ──────────────────────────────────
+
+def get_setting(key: str) -> str | None:
+    with _conn() as c:
+        c.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = c.fetchone()
+        return row["value"] if row else None
+
+
+def set_setting(key: str, value: str):
+    with _conn() as c:
+        c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
+
+
+def get_or_create_api_key() -> str:
+    """Get existing API key or generate a new one on first boot."""
+    import secrets
+    key = get_setting("api_key")
+    if not key:
+        key = "pleng_" + secrets.token_hex(24)
+        set_setting("api_key", key)
+    return key

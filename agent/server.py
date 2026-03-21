@@ -25,6 +25,33 @@ _lock = threading.Lock()
 
 WORKSPACE = "/projects"
 MODEL = os.environ.get("MODEL_NAME", "claude-sonnet-4-20250514")
+PLATFORM_API_URL = os.environ.get("PLATFORM_API_URL", "http://platform-api:8000")
+
+# Fetch API key from platform-api on startup
+_platform_api_key = ""
+
+
+def _fetch_api_key():
+    """Fetch API key from platform-api (internal network, no auth needed)."""
+    global _platform_api_key
+    import time
+    import requests
+    for attempt in range(30):
+        try:
+            r = requests.get(f"{PLATFORM_API_URL}/internal/key", timeout=5)
+            if r.status_code == 200:
+                _platform_api_key = r.json().get("api_key", "")
+                logger.info(f"Got API key from platform-api: {_platform_api_key[:12]}...")
+                return
+        except Exception:
+            pass
+        logger.info(f"Waiting for platform-api... (attempt {attempt + 1})")
+        time.sleep(2)
+    logger.warning("Could not fetch API key from platform-api")
+
+
+# Fetch on import (runs in background)
+threading.Thread(target=_fetch_api_key, daemon=True).start()
 
 
 @app.route("/chat", methods=["POST"])
@@ -101,9 +128,11 @@ def _run_claude(message: str, resume_session: str = None) -> tuple[str, str | No
         ]
         if env.get("ANTHROPIC_API_KEY"):
             env_args.append(f"ANTHROPIC_API_KEY={env['ANTHROPIC_API_KEY']}")
-        # Pass platform API URL for pleng CLI
+        # Pass platform API URL + key for pleng CLI
         api_url = env.get("PLATFORM_API_URL", "http://platform-api:8000")
         env_args.append(f"PLATFORM_API_URL={api_url}")
+        if _platform_api_key:
+            env_args.append(f"PLENG_API_KEY={_platform_api_key}")
 
         cmd = ["sudo", "-u", "claude", "env"] + env_args + cmd
 

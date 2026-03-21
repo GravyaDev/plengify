@@ -1,12 +1,16 @@
 """Platform API — orchestrates Docker, domains, state.
 
 The single source of truth. Agent, telegram-bot, and dashboard all talk to this.
+Auth: API key auto-generated on first boot. Internal services fetch it via /internal/key.
 """
+import ipaddress
 import logging
 import os
-import threading
+import shutil
+import tarfile
+import tempfile
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
@@ -20,11 +24,80 @@ logger = logging.getLogger("platform-api")
 app = FastAPI(title="Pleng Platform API", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+_api_key: str = ""
+
+# Docker internal networks (containers talking to each other)
+INTERNAL_NETS = [
+    ipaddress.ip_network("172.16.0.0/12"),   # Docker default
+    ipaddress.ip_network("10.0.0.0/8"),       # Docker overlay
+    ipaddress.ip_network("192.168.0.0/16"),   # Docker bridge
+    ipaddress.ip_network("127.0.0.0/8"),      # Localhost
+]
+
+
+def _is_internal(ip: str) -> bool:
+    """Check if request comes from Docker internal network."""
+    try:
+        addr = ipaddress.ip_address(ip)
+        return any(addr in net for net in INTERNAL_NETS)
+    except ValueError:
+        return False
+
 
 @app.on_event("startup")
 def startup():
+    global _api_key
     db.init()
-    logger.info(f"Platform API ready — PUBLIC_IP={os.environ.get('PUBLIC_IP', '?')}")
+    _api_key = db.get_or_create_api_key()
+    ip = os.environ.get("PUBLIC_IP", "?")
+    logger.info("=" * 60)
+    logger.info("  Pleng Platform API ready")
+    logger.info(f"  PUBLIC_IP: {ip}")
+    logger.info(f"  Panel:     http://panel.{ip}.sslip.io")
+    logger.info(f"  API Key:   {_api_key}")
+    logger.info("=" * 60)
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    path = request.url.path
+
+    # Public endpoints — no auth
+    if path in ("/api/health", "/skill.md", "/api/collect", "/t.js"):
+        return await call_next(request)
+    if path == "/internal/key":
+        return await call_next(request)
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    # Internal network — no auth needed (container-to-container)
+    client_ip = request.client.host if request.client else ""
+    if _is_internal(client_ip):
+        return await call_next(request)
+
+    # External — check API key
+    api_key = (
+        request.headers.get("X-API-Key", "")
+        or request.headers.get("Authorization", "").removeprefix("Bearer ")
+        or request.query_params.get("key", "")
+    )
+
+    if api_key != _api_key:
+        return PlainTextResponse("Unauthorized. Pass API key via X-API-Key header.", status_code=401)
+
+    return await call_next(request)
+
+
+# ── Internal (container-to-container only) ──────────────
+
+@app.get("/internal/key")
+def get_api_key(request: Request):
+    """Internal services call this on startup to get the API key.
+    Only accessible from Docker internal network."""
+    client_ip = request.client.host if request.client else ""
+    if not _is_internal(client_ip):
+        raise HTTPException(403, "Only accessible from internal network")
+    return {"api_key": _api_key}
 
 
 # ── Models ──────────────────────────────────────────────
@@ -79,14 +152,60 @@ def api_deploy_git(body: DeployGit):
         raise HTTPException(500, str(e))
 
 
+@app.post("/api/deploy/upload")
+async def api_deploy_upload(name: str = Form(...), file: UploadFile = File(...)):
+    """Upload a tar.gz of a project and deploy it.
+
+    For external agents (Claude Code on your Mac, etc.) to deploy without git.
+    """
+    existing = db.get_site_by_name(name)
+    if existing:
+        raise HTTPException(400, f"Site '{name}' already exists")
+
+    site = db.create_site(name, deploy_mode="upload")
+
+    try:
+        workspace = os.path.join(deployer.PROJECTS_DIR, site["id"])
+        os.makedirs(workspace, exist_ok=True)
+
+        # Save and extract upload
+        with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
+            content = await file.read()
+            tmp.write(content)
+            tmp_path = tmp.name
+
+        with tarfile.open(tmp_path, "r:gz") as tar:
+            tar.extractall(workspace, filter="data")
+        os.unlink(tmp_path)
+
+        db.add_site_log(site["id"], f"Uploaded and extracted ({len(content)} bytes)")
+
+        # Check for docker-compose.yml
+        compose_file = os.path.join(workspace, "docker-compose.yml")
+        if not os.path.exists(compose_file):
+            # Look one level deeper (tar might have a root folder)
+            for item in os.listdir(workspace):
+                sub = os.path.join(workspace, item, "docker-compose.yml")
+                if os.path.exists(sub):
+                    # Move contents up
+                    src_dir = os.path.join(workspace, item)
+                    for f in os.listdir(src_dir):
+                        shutil.move(os.path.join(src_dir, f), os.path.join(workspace, f))
+                    os.rmdir(src_dir)
+                    break
+
+        result = deployer.deploy_compose(site["id"], name, workspace)
+        return result
+
+    except Exception as e:
+        db.update_site(site["id"], status="error")
+        db.add_site_log(site["id"], str(e), level="error")
+        raise HTTPException(500, str(e))
+
+
 @app.post("/api/deploy/generate")
 def api_deploy_generate(body: DeployGenerate):
-    """Create workspace for AI agent to generate code, then deploy.
-
-    This just creates the site record and workspace.
-    The agent container writes code to /projects/{site_id}/ and then
-    calls POST /api/deploy/compose to actually deploy it.
-    """
+    """Create workspace for AI agent to generate code, then deploy."""
     existing = db.get_site_by_name(body.name)
     if existing:
         raise HTTPException(400, f"Site '{body.name}' already exists")
@@ -112,7 +231,6 @@ def api_list_sites():
 
 @app.get("/api/sites/{site_id}")
 def api_get_site(site_id: str):
-    # Allow lookup by id or name
     site = db.get_site(site_id) or db.get_site_by_name(site_id)
     if not site:
         raise HTTPException(404, "Site not found")
@@ -191,45 +309,70 @@ Connect to this Pleng instance to deploy and manage web applications.
 ## Base URL
 {base}
 
-## Endpoints
+## Authentication
+All requests need an API key. Pass it as a header:
+```
+X-API-Key: <your-api-key>
+```
+Get your API key from `docker compose logs platform-api` or from the dashboard.
 
-### Deploy from git repo
+## Deploy from git repo
+```
 POST {base}/api/deploy/git
+X-API-Key: <key>
 Body: {{"name": "my-app", "repo_url": "https://github.com/user/repo"}}
-Returns: {{"site_id": "...", "url": "http://xxxx.{ip}.sslip.io", "status": "staging"}}
+```
 
-### Deploy from docker-compose path (on server)
-POST {base}/api/deploy/compose
-Body: {{"name": "my-app", "compose_path": "/projects/site_id/docker-compose.yml"}}
+## Deploy by uploading code (tar.gz)
+```
+POST {base}/api/deploy/upload
+X-API-Key: <key>
+Content-Type: multipart/form-data
+Fields: name=my-app, file=@project.tar.gz
+```
+To create the tarball: `tar -czf project.tar.gz -C /path/to/project .`
 
-### Request AI-generated project
+## Ask the AI agent to generate a project
+```
 POST {base}/api/deploy/generate
+X-API-Key: <key>
 Body: {{"name": "my-app", "description": "A booking API with Postgres"}}
-Returns: {{"site_id": "...", "workspace": "/projects/...", "status": "generating"}}
-Note: After generating code in the workspace, call deploy/compose to deploy it.
+```
 
-### List all sites
+## List all sites
+```
 GET {base}/api/sites
+X-API-Key: <key>
+```
 
-### Get site details
+## Get site details
+```
 GET {base}/api/sites/{{id_or_name}}
+```
 
-### Docker logs
+## Docker logs
+```
 GET {base}/api/sites/{{id}}/logs?lines=100
+```
 
-### Stop / Restart / Remove
+## Stop / Restart / Remove
+```
 POST {base}/api/sites/{{id}}/stop
 POST {base}/api/sites/{{id}}/restart
 POST {base}/api/sites/{{id}}/remove
+```
 
-### Promote to production (custom domain + SSL)
+## Promote staging → production (custom domain + HTTPS)
+```
 POST {base}/api/sites/{{id}}/promote
 Body: {{"domain": "app.example.com"}}
+```
 
 ## How it works
-- Every deploy gets a free staging URL: http://{{hash}}.{ip}.sslip.io
-- Promote to production with a custom domain to get HTTPS via Let's Encrypt
-- All containers are managed via Docker Compose + Traefik
+1. Every deploy starts as **staging** with a free URL: `http://{{hash}}.{ip}.sslip.io`
+2. No domain needed. No DNS config. Works instantly.
+3. When ready, **promote** to production with a custom domain → automatic HTTPS via Let's Encrypt.
+4. Stop, restart, or remove anytime.
 """
 
 
