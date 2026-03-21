@@ -253,7 +253,7 @@ pleng/
 
 ## License
 
-MIT
+AGPL-3.0 — same as Coolify. You can self-host freely. If you modify the code and offer it as a service, you must open-source your changes. See [LICENSE](LICENSE).
 
 ---
 
