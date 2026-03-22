@@ -237,15 +237,11 @@ def _prepare_workspace(site_id: str) -> str:
 
 
 def _compose_cmd(project: str, workspace: str, *args) -> list[str]:
-    """Build docker compose command with both user compose and pleng override."""
-    user_compose = os.path.join(workspace, "docker-compose.yml")
-    pleng_override = os.path.join(workspace, "docker-compose.pleng.yml")
-
-    cmd = ["docker", "compose", "-f", user_compose]
-    if os.path.exists(pleng_override):
-        cmd.extend(["-f", pleng_override])
-    cmd.extend(["-p", project] + list(args))
-    return cmd
+    """Build docker compose command using the pleng-generated compose (not user's)."""
+    pleng_compose = os.path.join(workspace, "docker-compose.pleng.yml")
+    # Use pleng compose if it exists, otherwise fall back to user's
+    compose_file = pleng_compose if os.path.exists(pleng_compose) else os.path.join(workspace, "docker-compose.yml")
+    return ["docker", "compose", "-f", compose_file, "-p", project] + list(args)
 
 
 def _deploy(site_id: str, name: str, workspace: str) -> dict:
@@ -290,79 +286,90 @@ def _deploy(site_id: str, name: str, workspace: str) -> dict:
 
 def _generate_pleng_override(workspace: str, name: str, staging_domain: str,
                               production_domain: str = None):
-    """Generate docker-compose.pleng.yml with Traefik labels and absolute build paths.
+    """Generate docker-compose.pleng.yml — a complete compose based on the user's.
 
-    This file is merged with the user's docker-compose.yml via -f flag.
-    The user's compose is NEVER modified.
+    Reads the user's docker-compose.yml, applies Pleng modifications:
+    - Removes host port bindings (Traefik handles routing)
+    - Adds Traefik labels
+    - Converts relative build paths to absolute
+    - Adds pleng_web network
+
+    The user's docker-compose.yml is NEVER modified.
     """
     user_compose_file = os.path.join(workspace, "docker-compose.yml")
     with open(user_compose_file) as f:
-        user_compose = yaml.safe_load(f)
+        compose = yaml.safe_load(f)
 
-    if not user_compose or "services" not in user_compose:
+    if not compose or "services" not in compose:
         return
 
     # Find main service (one with ports)
     main_svc = None
     internal_port = "80"
-    for svc_name, svc_config in user_compose.get("services", {}).items():
+    for svc_name, svc_config in compose.get("services", {}).items():
         if svc_config.get("ports"):
             main_svc = svc_name
             p = str(svc_config["ports"][0])
             internal_port = p.split(":")[-1] if ":" in p else p
             break
     if not main_svc:
-        main_svc = list(user_compose["services"].keys())[0]
+        main_svc = list(compose["services"].keys())[0]
 
     router = name.replace("-", "").replace("_", "").replace(".", "")
 
-    # Build override for main service
-    override_svc = {
-        "labels": [
-            "traefik.enable=true",
-            f"traefik.http.routers.{router}.rule=Host(`{staging_domain}`)",
-            f"traefik.http.routers.{router}.entrypoints=web",
-            f"traefik.http.services.{router}.loadbalancer.server.port={internal_port}",
-        ],
-        "networks": ["pleng_web"],
-    }
+    # Remove host port bindings from main service
+    compose["services"][main_svc].pop("ports", None)
 
-    # Add production labels if promoting
+    # Add Traefik labels
+    labels = [
+        "traefik.enable=true",
+        f"traefik.http.routers.{router}.rule=Host(`{staging_domain}`)",
+        f"traefik.http.routers.{router}.entrypoints=web",
+        f"traefik.http.services.{router}.loadbalancer.server.port={internal_port}",
+    ]
     if production_domain:
-        override_svc["labels"].extend([
+        labels.extend([
             f"traefik.http.routers.{router}-prod.rule=Host(`{production_domain}`)",
             f"traefik.http.routers.{router}-prod.entrypoints=websecure",
             f"traefik.http.routers.{router}-prod.tls.certresolver=letsencrypt",
             f"traefik.http.routers.{router}-prod.service={router}",
         ])
+    compose["services"][main_svc]["labels"] = labels
 
-    # Remove ports (Traefik handles routing) — override with empty
-    override_svc["ports"] = []
+    # Add pleng_web network to main service
+    svc_networks = compose["services"][main_svc].get("networks", [])
+    if isinstance(svc_networks, list) and "pleng_web" not in svc_networks:
+        svc_networks.append("pleng_web")
+    elif isinstance(svc_networks, dict) and "pleng_web" not in svc_networks:
+        svc_networks["pleng_web"] = {}
+    compose["services"][main_svc]["networks"] = svc_networks
 
-    # Fix build context: make relative paths absolute
-    user_build = user_compose["services"][main_svc].get("build")
-    if user_build:
-        if isinstance(user_build, str) and user_build in (".", "./"):
-            override_svc["build"] = workspace
-        elif isinstance(user_build, str) and user_build.startswith("./"):
-            override_svc["build"] = os.path.join(workspace, user_build[2:])
-        elif isinstance(user_build, dict):
-            ctx = user_build.get("context", ".")
+    # Fix build contexts: relative → absolute
+    for svc_name, svc in compose.get("services", {}).items():
+        build = svc.get("build")
+        if build is None:
+            continue
+        if isinstance(build, str) and build in (".", "./"):
+            svc["build"] = workspace
+        elif isinstance(build, str) and build.startswith("./"):
+            svc["build"] = os.path.join(workspace, build[2:])
+        elif isinstance(build, dict):
+            ctx = build.get("context", ".")
             if ctx in (".", "./"):
-                override_svc["build"] = {"context": workspace}
+                build["context"] = workspace
             elif ctx.startswith("./"):
-                override_svc["build"] = {"context": os.path.join(workspace, ctx[2:])}
+                build["context"] = os.path.join(workspace, ctx[2:])
 
-    override = {
-        "services": {main_svc: override_svc},
-        "networks": {"pleng_web": {"external": True}},
-    }
+    # Add pleng_web network definition
+    if "networks" not in compose:
+        compose["networks"] = {}
+    compose["networks"]["pleng_web"] = {"external": True}
 
-    override_file = os.path.join(workspace, "docker-compose.pleng.yml")
-    with open(override_file, "w") as f:
-        yaml.dump(override, f, default_flow_style=False, sort_keys=False)
+    pleng_file = os.path.join(workspace, "docker-compose.pleng.yml")
+    with open(pleng_file, "w") as f:
+        yaml.dump(compose, f, default_flow_style=False, sort_keys=False)
 
-    logger.info(f"Generated pleng override for {name} at {override_file}")
+    logger.info(f"Generated pleng compose for {name}")
 
 
 def _connect_network(project: str):
