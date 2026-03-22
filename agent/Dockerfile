@@ -13,8 +13,8 @@ RUN useradd -m -s /bin/bash claude && \
     echo "claude ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # Install Claude Code skills (design + SEO)
-RUN su - claude -c "npx skills add https://github.com/anthropics/skills --skill frontend-design" && \
-    su - claude -c "npx skills add https://github.com/resciencelab/opc-skills --skill seo-geo"
+RUN su - claude -c "cd /home/claude && npx skills add https://github.com/anthropics/skills --skill frontend-design -y -g" && \
+    su - claude -c "cd /home/claude && npx skills add https://github.com/resciencelab/opc-skills --skill seo-geo -y -g"
 
 WORKDIR /app
 COPY requirements.txt .
