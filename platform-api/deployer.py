@@ -1,7 +1,8 @@
 """Docker deploy engine. Manages containers via docker compose CLI.
 
-Every project lives in /projects/{site_id}/ with its own docker-compose.yml.
-Traefik labels are injected for automatic routing + SSL.
+Every project lives in PROJECTS_DIR/{name or site_id}/ with its own docker-compose.yml.
+Pleng generates a separate docker-compose.pleng.yml with Traefik labels and build context fixes.
+The user's docker-compose.yml is NEVER modified.
 """
 import hashlib
 import json
@@ -19,19 +20,18 @@ logger = logging.getLogger(__name__)
 
 PROJECTS_DIR = os.environ.get("PROJECTS_DIR", "/opt/pleng/projects")
 PUBLIC_IP = os.environ.get("PUBLIC_IP", "127.0.0.1")
-BASE_DOMAIN = os.environ.get("BASE_DOMAIN", "")
 NETWORK = "pleng_web"
 
 
 def staging_domain(name: str) -> str:
-    """Generate sslip.io staging domain: {hash}.{IP}.sslip.io"""
     h = hashlib.md5(name.encode()).hexdigest()[:4]
     return f"{h}.{PUBLIC_IP}.sslip.io"
 
 
+# ── Deploy modes ────────────────────────────────────────
+
 def deploy_compose(site_id: str, name: str, compose_source: str) -> dict:
     """Deploy from an existing docker-compose.yml path or directory."""
-    # If source is a directory with a docker-compose.yml, use it directly as workspace
     if os.path.isdir(compose_source) and os.path.exists(os.path.join(compose_source, "docker-compose.yml")):
         workspace = compose_source
         db.update_site(site_id, project_path=workspace)
@@ -45,7 +45,6 @@ def deploy_compose(site_id: str, name: str, compose_source: str) -> dict:
 
 
 def deploy_git(site_id: str, name: str, repo_url: str, branch: str = "main") -> dict:
-    """Clone a git repo and deploy it."""
     workspace = _prepare_workspace(site_id)
 
     token = os.environ.get("GITHUB_TOKEN", "")
@@ -63,11 +62,10 @@ def deploy_git(site_id: str, name: str, repo_url: str, branch: str = "main") -> 
     db.add_site_log(site_id, f"Cloned {repo_url}")
     db.update_site(site_id, github_url=repo_url)
 
-    compose_file = os.path.join(workspace, "docker-compose.yml")
-    if not os.path.exists(compose_file):
+    if not os.path.exists(os.path.join(workspace, "docker-compose.yml")):
         generated = _auto_generate_compose(workspace)
         if generated:
-            with open(compose_file, "w") as f:
+            with open(os.path.join(workspace, "docker-compose.yml"), "w") as f:
                 f.write(generated)
             db.add_site_log(site_id, "Auto-generated docker-compose.yml")
         else:
@@ -76,38 +74,24 @@ def deploy_git(site_id: str, name: str, repo_url: str, branch: str = "main") -> 
     return _deploy(site_id, name, workspace)
 
 
-def stop(site_id: str) -> bool:
-    site = db.get_site(site_id)
-    if not site:
-        return False
-    project = f"pleng-{site['name']}"
-    workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
-    r = subprocess.run(_compose_cmd(project, workspace, "stop"),
-                       capture_output=True, text=True, timeout=60)
-    if r.returncode == 0:
-        db.update_site(site_id, status="stopped")
-        db.add_site_log(site_id, "Stopped")
-        return True
-    return False
-
+# ── Site operations ─────────────────────────────────────
 
 def redeploy(site_id: str) -> dict:
-    """Rebuild and restart a site. Keeps the same domain."""
     site = db.get_site(site_id)
     if not site:
         return {"error": "Site not found"}
 
-    project = f"pleng-{site['name']}"
+    name = site["name"]
     workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
-    compose_file = os.path.join(workspace, "docker-compose.yml")
 
-    if not os.path.exists(compose_file):
+    if not os.path.exists(os.path.join(workspace, "docker-compose.yml")):
         return {"error": f"No docker-compose.yml in {workspace}"}
 
-    db.add_site_log(site_id, "Redeploying (rebuild)...")
+    domain = site.get("staging_domain") or staging_domain(name)
+    _generate_pleng_override(workspace, name, domain)
 
-    # Rewrite build contexts in case compose was reset
-    _rewrite_build_contexts(compose_file, workspace)
+    db.add_site_log(site_id, "Redeploying...")
+    project = f"pleng-{name}"
 
     result = subprocess.run(
         _compose_cmd(project, workspace, "up", "-d", "--build", "--force-recreate"),
@@ -121,20 +105,32 @@ def redeploy(site_id: str) -> dict:
 
     _connect_network(project)
     db.update_site(site_id, deployed_at=datetime.utcnow().isoformat())
-    db.add_site_log(site_id, "Redeployed successfully")
+    db.add_site_log(site_id, "Redeployed")
 
-    domain = site.get("production_domain") or site.get("staging_domain") or ""
     url = f"https://{domain}" if site.get("production_domain") else f"http://{domain}"
-    return {"site_id": site_id, "name": site["name"], "status": site["status"], "url": url}
+    return {"site_id": site_id, "name": name, "status": site["status"], "url": url}
+
+
+def stop(site_id: str) -> bool:
+    site = db.get_site(site_id)
+    if not site:
+        return False
+    workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
+    r = subprocess.run(_compose_cmd(f"pleng-{site['name']}", workspace, "stop"),
+                       capture_output=True, text=True, timeout=60)
+    if r.returncode == 0:
+        db.update_site(site_id, status="stopped")
+        db.add_site_log(site_id, "Stopped")
+        return True
+    return False
 
 
 def restart(site_id: str) -> bool:
     site = db.get_site(site_id)
     if not site:
         return False
-    project = f"pleng-{site['name']}"
     workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
-    r = subprocess.run(_compose_cmd(project, workspace, "restart"),
+    r = subprocess.run(_compose_cmd(f"pleng-{site['name']}", workspace, "restart"),
                        capture_output=True, text=True, timeout=60)
     if r.returncode == 0:
         db.update_site(site_id, status="staging" if not site.get("production_domain") else "production")
@@ -144,39 +140,32 @@ def restart(site_id: str) -> bool:
 
 
 def remove(site_id: str) -> bool:
-    """Remove a site. Production sites keep their files (safety). Staging deletes everything."""
     site = db.get_site(site_id)
     if not site:
         return False
-    project = f"pleng-{site['name']}"
     workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
     is_production = site.get("status") == "production"
 
-    subprocess.run(_compose_cmd(project, workspace, "down", "-v", "--remove-orphans"),
+    subprocess.run(_compose_cmd(f"pleng-{site['name']}", workspace, "down", "-v", "--remove-orphans"),
                    capture_output=True, text=True, timeout=60)
 
     if is_production:
-        # Production: keep files, just mark as removed
         db.update_site(site_id, status="removed")
         db.add_site_log(site_id, "Production site removed (files kept)")
     else:
-        # Staging: delete everything
         db.delete_site(site_id)
+        # Remove pleng override but keep user files? No — staging deletes all
         if os.path.exists(workspace):
             shutil.rmtree(workspace, ignore_errors=True)
-
     return True
 
 
 def destroy(site_id: str) -> bool:
-    """Permanently destroy a site — delete containers, files, and DB record. Requires confirmation."""
     site = db.get_site(site_id)
     if not site:
         return False
-    project = f"pleng-{site['name']}"
     workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
-
-    subprocess.run(_compose_cmd(project, workspace, "down", "-v", "--remove-orphans"),
+    subprocess.run(_compose_cmd(f"pleng-{site['name']}", workspace, "down", "-v", "--remove-orphans"),
                    capture_output=True, text=True, timeout=60)
     db.delete_site(site_id)
     if os.path.exists(workspace):
@@ -188,9 +177,8 @@ def docker_logs(site_id: str, lines: int = 100) -> str:
     site = db.get_site(site_id)
     if not site:
         return "Site not found"
-    project = f"pleng-{site['name']}"
     workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
-    r = subprocess.run(_compose_cmd(project, workspace, "logs", "--tail", str(lines)),
+    r = subprocess.run(_compose_cmd(f"pleng-{site['name']}", workspace, "logs", "--tail", str(lines)),
                        capture_output=True, text=True, timeout=30)
     return r.stdout or r.stderr or "No logs"
 
@@ -199,9 +187,8 @@ def container_status(site_id: str) -> list[dict]:
     site = db.get_site(site_id)
     if not site:
         return []
-    project = f"pleng-{site['name']}"
     workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
-    r = subprocess.run(_compose_cmd(project, workspace, "ps", "--format", "json"),
+    r = subprocess.run(_compose_cmd(f"pleng-{site['name']}", workspace, "ps", "--format", "json"),
                        capture_output=True, text=True, timeout=15)
     containers = []
     for line in (r.stdout or "").strip().split("\n"):
@@ -214,69 +201,31 @@ def container_status(site_id: str) -> list[dict]:
 
 
 def promote(site_id: str, domain: str) -> dict:
-    """Promote a staging site to production with a custom domain + SSL."""
     site = db.get_site(site_id)
     if not site:
         raise ValueError("Site not found")
 
-    workspace = os.path.join(PROJECTS_DIR, site_id)
-    compose_file = os.path.join(workspace, "docker-compose.yml")
+    workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
+    name = site["name"]
+    staging = site.get("staging_domain") or staging_domain(name)
 
-    with open(compose_file) as f:
-        compose = yaml.safe_load(f)
+    # Regenerate override with production labels
+    _generate_pleng_override(workspace, name, staging, production_domain=domain)
 
-    # Find the main service and add production Traefik labels
-    main_svc = _find_main_service(compose)
-    labels = compose["services"][main_svc].get("labels", [])
-    if isinstance(labels, dict):
-        labels = [f"{k}={v}" for k, v in labels.items()]
-
-    router = site["name"].replace("-", "").replace("_", "").replace(".", "")
-
-    # Find the existing service name from staging labels
-    svc_label_key = f"traefik.http.services.{router}.loadbalancer.server.port"
-    internal_port = "80"
-    for l in labels:
-        if svc_label_key in l:
-            internal_port = l.split("=")[-1]
-            break
-
-    prod_labels = [
-        f"traefik.http.routers.{router}-prod.rule=Host(`{domain}`)",
-        f"traefik.http.routers.{router}-prod.entrypoints=websecure",
-        f"traefik.http.routers.{router}-prod.tls.certresolver=letsencrypt",
-        f"traefik.http.routers.{router}-prod.service={router}",
-    ]
-
-    existing_keys = {l.split("=")[0] for l in labels if "=" in l}
-    for l in prod_labels:
-        if l.split("=")[0] not in existing_keys:
-            labels.append(l)
-
-    compose["services"][main_svc]["labels"] = labels
-
-    with open(compose_file, "w") as f:
-        yaml.dump(compose, f, default_flow_style=False, sort_keys=False)
-
-    # Recreate to pick up new labels
-    project = f"pleng-{site['name']}"
-    result = subprocess.run(_compose_cmd(project, workspace, "up", "-d"),
+    project = f"pleng-{name}"
+    result = subprocess.run(_compose_cmd(project, workspace, "up", "-d", "--force-recreate"),
                             capture_output=True, text=True, timeout=120)
 
     if result.returncode != 0:
         error = result.stderr[:300]
         db.add_site_log(site_id, f"Promote failed: {error}", level="error")
-        raise RuntimeError(f"Promote deploy failed: {error}")
+        raise RuntimeError(f"Promote failed: {error}")
 
+    _connect_network(project)
     db.update_site(site_id, production_domain=domain, status="production")
-    db.add_site_log(site_id, f"Promoted to production: https://{domain}")
+    db.add_site_log(site_id, f"Promoted: https://{domain}")
 
-    return {
-        "site_id": site_id,
-        "domain": domain,
-        "url": f"https://{domain}",
-        "status": "production",
-    }
+    return {"site_id": site_id, "domain": domain, "url": f"https://{domain}", "status": "production"}
 
 
 # ── Internal ────────────────────────────────────────────
@@ -288,9 +237,15 @@ def _prepare_workspace(site_id: str) -> str:
 
 
 def _compose_cmd(project: str, workspace: str, *args) -> list[str]:
-    """Build a docker compose command. Uses container path (CLI reads file locally)."""
-    compose_file = os.path.join(workspace, "docker-compose.yml")
-    return ["docker", "compose", "-f", compose_file, "-p", project] + list(args)
+    """Build docker compose command with both user compose and pleng override."""
+    user_compose = os.path.join(workspace, "docker-compose.yml")
+    pleng_override = os.path.join(workspace, "docker-compose.pleng.yml")
+
+    cmd = ["docker", "compose", "-f", user_compose]
+    if os.path.exists(pleng_override):
+        cmd.extend(["-f", pleng_override])
+    cmd.extend(["-p", project] + list(args))
+    return cmd
 
 
 def _deploy(site_id: str, name: str, workspace: str) -> dict:
@@ -299,10 +254,10 @@ def _deploy(site_id: str, name: str, workspace: str) -> dict:
         raise FileNotFoundError("No docker-compose.yml in workspace")
 
     domain = staging_domain(name)
-    _inject_traefik_labels(compose_file, name, domain)
 
-    # Rewrite build contexts to use host paths (Docker daemon runs on host, not in container)
-    _rewrite_build_contexts(compose_file, workspace)
+    # Generate pleng override (traefik labels + absolute build paths)
+    # User's docker-compose.yml is NEVER touched
+    _generate_pleng_override(workspace, name, domain)
 
     db.add_site_log(site_id, "Building and starting containers...")
     project = f"pleng-{name}"
@@ -333,113 +288,81 @@ def _deploy(site_id: str, name: str, workspace: str) -> dict:
     return {"site_id": site_id, "name": name, "status": "staging", "url": url, "domain": domain}
 
 
-def _rewrite_build_contexts(compose_file: str, workspace: str):
-    """Rewrite relative build contexts (e.g. 'build: .') to absolute paths.
+def _generate_pleng_override(workspace: str, name: str, staging_domain: str,
+                              production_domain: str = None):
+    """Generate docker-compose.pleng.yml with Traefik labels and absolute build paths.
 
-    Container and host share the same mount path, so absolute paths work for both
-    the Docker CLI (in container) and the Docker daemon (on host).
+    This file is merged with the user's docker-compose.yml via -f flag.
+    The user's compose is NEVER modified.
     """
-    try:
-        with open(compose_file) as f:
-            compose = yaml.safe_load(f)
+    user_compose_file = os.path.join(workspace, "docker-compose.yml")
+    with open(user_compose_file) as f:
+        user_compose = yaml.safe_load(f)
 
-        if not compose or "services" not in compose:
-            return
+    if not user_compose or "services" not in user_compose:
+        return
 
-        changed = False
-        for svc_name, svc in compose.get("services", {}).items():
-            build = svc.get("build")
-            if build is None:
-                continue
-
-            if isinstance(build, str):
-                if build in (".", "./"):
-                    svc["build"] = workspace
-                    changed = True
-                elif build.startswith("./"):
-                    svc["build"] = os.path.join(workspace, build[2:])
-                    changed = True
-
-            elif isinstance(build, dict):
-                ctx = build.get("context", ".")
-                if ctx in (".", "./"):
-                    build["context"] = workspace
-                    changed = True
-                elif ctx.startswith("./"):
-                    build["context"] = os.path.join(workspace, ctx[2:])
-                    changed = True
-
-        if changed:
-            with open(compose_file, "w") as f:
-                yaml.dump(compose, f, default_flow_style=False, sort_keys=False)
-
-    except Exception as e:
-        logger.warning(f"Failed to rewrite build contexts: {e}")
-
-
-def _inject_traefik_labels(compose_file: str, name: str, domain: str):
-    try:
-        with open(compose_file) as f:
-            compose = yaml.safe_load(f)
-
-        if not compose or "services" not in compose:
-            return
-
-        main_svc = _find_main_service(compose)
-        svc = compose["services"][main_svc]
-
-        # Detect internal port
-        ports = svc.get("ports", [])
-        internal_port = "80"
-        if ports:
-            p = str(ports[0])
+    # Find main service (one with ports)
+    main_svc = None
+    internal_port = "80"
+    for svc_name, svc_config in user_compose.get("services", {}).items():
+        if svc_config.get("ports"):
+            main_svc = svc_name
+            p = str(svc_config["ports"][0])
             internal_port = p.split(":")[-1] if ":" in p else p
+            break
+    if not main_svc:
+        main_svc = list(user_compose["services"].keys())[0]
 
-        # Remove host port bindings (Traefik handles routing)
-        svc.pop("ports", None)
+    router = name.replace("-", "").replace("_", "").replace(".", "")
 
-        router = name.replace("-", "").replace("_", "").replace(".", "")
-
-        # Remove ALL existing traefik labels (clean slate)
-        old_labels = svc.get("labels", [])
-        if isinstance(old_labels, dict):
-            old_labels = [f"{k}={v}" for k, v in old_labels.items()]
-        labels = [l for l in old_labels if not l.startswith("traefik.")]
-
-        # Add fresh traefik labels
-        labels.extend([
+    # Build override for main service
+    override_svc = {
+        "labels": [
             "traefik.enable=true",
-            f"traefik.http.routers.{router}.rule=Host(`{domain}`)",
+            f"traefik.http.routers.{router}.rule=Host(`{staging_domain}`)",
             f"traefik.http.routers.{router}.entrypoints=web",
             f"traefik.http.services.{router}.loadbalancer.server.port={internal_port}",
+        ],
+        "networks": ["pleng_web"],
+    }
+
+    # Add production labels if promoting
+    if production_domain:
+        override_svc["labels"].extend([
+            f"traefik.http.routers.{router}-prod.rule=Host(`{production_domain}`)",
+            f"traefik.http.routers.{router}-prod.entrypoints=websecure",
+            f"traefik.http.routers.{router}-prod.tls.certresolver=letsencrypt",
+            f"traefik.http.routers.{router}-prod.service={router}",
         ])
 
-        svc["labels"] = labels
+    # Remove ports (Traefik handles routing) — override with empty
+    override_svc["ports"] = []
 
-        # Network
-        networks = svc.get("networks", [])
-        if isinstance(networks, list) and "pleng_web" not in networks:
-            networks.append("pleng_web")
-        elif isinstance(networks, dict) and "pleng_web" not in networks:
-            networks["pleng_web"] = {}
-        svc["networks"] = networks
+    # Fix build context: make relative paths absolute
+    user_build = user_compose["services"][main_svc].get("build")
+    if user_build:
+        if isinstance(user_build, str) and user_build in (".", "./"):
+            override_svc["build"] = workspace
+        elif isinstance(user_build, str) and user_build.startswith("./"):
+            override_svc["build"] = os.path.join(workspace, user_build[2:])
+        elif isinstance(user_build, dict):
+            ctx = user_build.get("context", ".")
+            if ctx in (".", "./"):
+                override_svc["build"] = {"context": workspace}
+            elif ctx.startswith("./"):
+                override_svc["build"] = {"context": os.path.join(workspace, ctx[2:])}
 
-        if "networks" not in compose:
-            compose["networks"] = {}
-        compose["networks"]["pleng_web"] = {"external": True}
+    override = {
+        "services": {main_svc: override_svc},
+        "networks": {"pleng_web": {"external": True}},
+    }
 
-        with open(compose_file, "w") as f:
-            yaml.dump(compose, f, default_flow_style=False, sort_keys=False)
+    override_file = os.path.join(workspace, "docker-compose.pleng.yml")
+    with open(override_file, "w") as f:
+        yaml.dump(override, f, default_flow_style=False, sort_keys=False)
 
-    except Exception as e:
-        logger.warning(f"Failed to inject Traefik labels: {e}")
-
-
-def _find_main_service(compose: dict) -> str:
-    for name, cfg in compose.get("services", {}).items():
-        if cfg.get("ports"):
-            return name
-    return list(compose.get("services", {}).keys())[0]
+    logger.info(f"Generated pleng override for {name} at {override_file}")
 
 
 def _connect_network(project: str):
