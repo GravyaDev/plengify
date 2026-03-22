@@ -107,11 +107,38 @@ def restart(site_id: str) -> bool:
 
 
 def remove(site_id: str) -> bool:
+    """Remove a site. Production sites keep their files (safety). Staging deletes everything."""
     site = db.get_site(site_id)
     if not site:
         return False
     project = f"pleng-{site['name']}"
     workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
+    is_production = site.get("status") == "production"
+
+    subprocess.run(_compose_cmd(project, workspace, "down", "-v", "--remove-orphans"),
+                   capture_output=True, text=True, timeout=60)
+
+    if is_production:
+        # Production: keep files, just mark as removed
+        db.update_site(site_id, status="removed")
+        db.add_site_log(site_id, "Production site removed (files kept)")
+    else:
+        # Staging: delete everything
+        db.delete_site(site_id)
+        if os.path.exists(workspace):
+            shutil.rmtree(workspace, ignore_errors=True)
+
+    return True
+
+
+def destroy(site_id: str) -> bool:
+    """Permanently destroy a site — delete containers, files, and DB record. Requires confirmation."""
+    site = db.get_site(site_id)
+    if not site:
+        return False
+    project = f"pleng-{site['name']}"
+    workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
+
     subprocess.run(_compose_cmd(project, workspace, "down", "-v", "--remove-orphans"),
                    capture_output=True, text=True, timeout=60)
     db.delete_site(site_id)

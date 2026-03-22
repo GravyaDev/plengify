@@ -163,7 +163,25 @@ def cmd_remove(args: list[str]):
     if not name:
         print("Error: pleng remove <name>"); sys.exit(1)
     result = _post(f"/api/sites/{name}/remove")
-    print("Removed" if result.get("ok") else f"Failed: {result}")
+    if result.get("ok"):
+        if result.get("kept_files"):
+            print(f"Removed (production — files kept, containers stopped)")
+        else:
+            print("Removed (staging — everything deleted)")
+    else:
+        print(f"Failed: {result}")
+
+
+def cmd_destroy(args: list[str]):
+    name = args[0] if args else ""
+    confirm = _flag(args, "--confirm")
+    if not name:
+        print("Error: pleng destroy <name> --confirm yes"); sys.exit(1)
+    if confirm != "yes":
+        print("Error: pleng destroy requires --confirm yes (permanently deletes everything)")
+        sys.exit(1)
+    result = _post(f"/api/sites/{name}/destroy")
+    print("Destroyed permanently" if result.get("ok") else f"Failed: {result}")
 
 
 def cmd_promote(args: list[str]):
@@ -244,6 +262,7 @@ def main():
         "stop": lambda: cmd_stop(rest),
         "restart": lambda: cmd_restart(rest),
         "remove": lambda: cmd_remove(rest),
+        "destroy": lambda: cmd_destroy(rest),
         "promote": lambda: cmd_promote(rest),
         "chat": lambda: cmd_chat(),
     }

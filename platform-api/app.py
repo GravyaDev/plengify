@@ -248,10 +248,20 @@ def api_restart(site_id: str):
 
 @app.post("/api/sites/{site_id}/remove")
 def api_remove(site_id: str):
+    """Remove a site. Production keeps files. Staging deletes everything."""
     site = db.get_site(site_id) or db.get_site_by_name(site_id)
     if not site:
         raise HTTPException(404)
-    return {"ok": deployer.remove(site["id"])}
+    return {"ok": deployer.remove(site["id"]), "kept_files": site.get("status") == "production"}
+
+
+@app.post("/api/sites/{site_id}/destroy")
+def api_destroy(site_id: str):
+    """Permanently destroy — containers + files + DB. No undo."""
+    site = db.get_site(site_id) or db.get_site_by_name(site_id)
+    if not site:
+        raise HTTPException(404)
+    return {"ok": deployer.destroy(site["id"])}
 
 
 @app.get("/api/sites/{site_id}/logs")

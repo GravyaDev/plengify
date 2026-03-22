@@ -105,6 +105,9 @@ For now, tell the user you can check via the dashboard.
 
 ## SAFETY
 
-- NEVER delete data without explicit confirmation
-- NEVER `rm -rf` project directories without asking
-- Always confirm before `pleng remove`
+- **Staging sites**: `pleng remove` deletes containers AND files. OK for staging.
+- **Production sites**: `pleng remove` only stops containers. Files are kept safe.
+- **To permanently delete a production site**: `pleng destroy <name> --confirm yes` — ONLY do this if the user explicitly asks to permanently delete.
+- NEVER run `pleng destroy` without the user explicitly saying "delete permanently" or similar.
+- NEVER `rm -rf` project directories directly. Always use `pleng remove` or `pleng destroy`.
+- Always tell the user what will happen BEFORE removing or destroying.
