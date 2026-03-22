@@ -141,9 +141,19 @@ def api_deploy_compose(body: DeployCompose):
     existing = db.get_site_by_name(body.name)
     if existing:
         raise HTTPException(400, f"Site '{body.name}' already exists")
+
+    # Resolve compose_path: if it doesn't exist, try PROJECTS_DIR/name
+    compose_path = body.compose_path
+    if not os.path.exists(compose_path):
+        fallback = os.path.join(deployer.PROJECTS_DIR, body.name)
+        if os.path.exists(fallback):
+            compose_path = fallback
+        else:
+            raise HTTPException(400, f"Path not found: {compose_path} (also tried {fallback})")
+
     site = db.create_site(body.name, deploy_mode="compose")
     try:
-        result = deployer.deploy_compose(site["id"], body.name, body.compose_path)
+        result = deployer.deploy_compose(site["id"], body.name, compose_path)
         return result
     except Exception as e:
         db.update_site(site["id"], status="error")

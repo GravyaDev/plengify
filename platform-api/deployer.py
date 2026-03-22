@@ -82,7 +82,7 @@ def redeploy(site_id: str) -> dict:
         return {"error": "Site not found"}
 
     name = site["name"]
-    workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
+    workspace = _resolve_workspace(site)
 
     if not os.path.exists(os.path.join(workspace, "docker-compose.yml")):
         return {"error": f"No docker-compose.yml in {workspace}"}
@@ -115,7 +115,7 @@ def stop(site_id: str) -> bool:
     site = db.get_site(site_id)
     if not site:
         return False
-    workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
+    workspace = _resolve_workspace(site)
     r = subprocess.run(_compose_cmd(f"pleng-{site['name']}", workspace, "stop"),
                        capture_output=True, text=True, timeout=60)
     if r.returncode == 0:
@@ -129,7 +129,7 @@ def restart(site_id: str) -> bool:
     site = db.get_site(site_id)
     if not site:
         return False
-    workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
+    workspace = _resolve_workspace(site)
     r = subprocess.run(_compose_cmd(f"pleng-{site['name']}", workspace, "restart"),
                        capture_output=True, text=True, timeout=60)
     if r.returncode == 0:
@@ -143,7 +143,7 @@ def remove(site_id: str) -> bool:
     site = db.get_site(site_id)
     if not site:
         return False
-    workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
+    workspace = _resolve_workspace(site)
     is_production = site.get("status") == "production"
 
     subprocess.run(_compose_cmd(f"pleng-{site['name']}", workspace, "down", "-v", "--remove-orphans"),
@@ -164,7 +164,7 @@ def destroy(site_id: str) -> bool:
     site = db.get_site(site_id)
     if not site:
         return False
-    workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
+    workspace = _resolve_workspace(site)
     subprocess.run(_compose_cmd(f"pleng-{site['name']}", workspace, "down", "-v", "--remove-orphans"),
                    capture_output=True, text=True, timeout=60)
     db.delete_site(site_id)
@@ -177,7 +177,7 @@ def docker_logs(site_id: str, lines: int = 100) -> str:
     site = db.get_site(site_id)
     if not site:
         return "Site not found"
-    workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
+    workspace = _resolve_workspace(site)
     r = subprocess.run(_compose_cmd(f"pleng-{site['name']}", workspace, "logs", "--tail", str(lines)),
                        capture_output=True, text=True, timeout=30)
     return r.stdout or r.stderr or "No logs"
@@ -187,7 +187,7 @@ def container_status(site_id: str) -> list[dict]:
     site = db.get_site(site_id)
     if not site:
         return []
-    workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
+    workspace = _resolve_workspace(site)
     r = subprocess.run(_compose_cmd(f"pleng-{site['name']}", workspace, "ps", "--format", "json"),
                        capture_output=True, text=True, timeout=15)
     containers = []
@@ -205,7 +205,7 @@ def promote(site_id: str, domain: str) -> dict:
     if not site:
         raise ValueError("Site not found")
 
-    workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
+    workspace = _resolve_workspace(site)
     name = site["name"]
     staging = site.get("staging_domain") or staging_domain(name)
 
@@ -234,6 +234,27 @@ def _prepare_workspace(site_id: str) -> str:
     workspace = os.path.join(PROJECTS_DIR, site_id)
     os.makedirs(workspace, exist_ok=True)
     return workspace
+
+
+def _resolve_workspace(site: dict) -> str:
+    """Find the actual workspace for a site, trying multiple fallback paths."""
+    # Try stored project_path first
+    path = site.get("project_path")
+    if path and os.path.exists(path):
+        return path
+
+    # Try PROJECTS_DIR/name
+    path = os.path.join(PROJECTS_DIR, site["name"])
+    if os.path.exists(path):
+        return path
+
+    # Try PROJECTS_DIR/site_id
+    path = os.path.join(PROJECTS_DIR, site["id"])
+    if os.path.exists(path):
+        return path
+
+    # Return best guess
+    return site.get("project_path") or os.path.join(PROJECTS_DIR, site["name"])
 
 
 def _compose_cmd(project: str, workspace: str, *args) -> list[str]:
