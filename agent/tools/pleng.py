@@ -31,13 +31,33 @@ def _headers() -> dict:
 
 
 def _get(path: str) -> dict:
-    r = requests.get(f"{API}{path}", headers=_headers(), timeout=30)
-    return r.json()
+    try:
+        r = requests.get(f"{API}{path}", headers=_headers(), timeout=30)
+        if r.status_code >= 400:
+            try:
+                return r.json()
+            except Exception:
+                return {"error": f"HTTP {r.status_code}: {r.text[:200]}"}
+        return r.json()
+    except requests.ConnectionError:
+        return {"error": "Cannot connect to platform-api. Is it running?"}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def _post(path: str, data: dict = None) -> dict:
-    r = requests.post(f"{API}{path}", json=data or {}, headers=_headers(), timeout=300)
-    return r.json()
+    try:
+        r = requests.post(f"{API}{path}", json=data or {}, headers=_headers(), timeout=300)
+        if r.status_code >= 400:
+            try:
+                return r.json()
+            except Exception:
+                return {"error": f"HTTP {r.status_code}: {r.text[:200]}"}
+        return r.json()
+    except requests.ConnectionError:
+        return {"error": "Cannot connect to platform-api. Is it running?"}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def cmd_sites():
@@ -105,7 +125,7 @@ def cmd_status(args: list[str]):
         print("Error: pleng status <name>")
         sys.exit(1)
     site = _get(f"/api/sites/{name}")
-    if "detail" in site:
+    if "error" in site or "detail" in site:
         print(f"Not found: {name}")
         return
     print(f"Name:       {site['name']}")

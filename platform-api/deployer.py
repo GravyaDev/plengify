@@ -4,10 +4,12 @@ Every project lives in /projects/{site_id}/ with its own docker-compose.yml.
 Traefik labels are injected for automatic routing + SSL.
 """
 import hashlib
+import json
 import logging
 import os
 import shutil
 import subprocess
+from datetime import datetime
 
 import yaml
 
@@ -142,7 +144,6 @@ def container_status(site_id: str) -> list[dict]:
     workspace = os.path.join(PROJECTS_DIR, site_id)
     r = subprocess.run(["docker", "compose", "-p", project, "ps", "--format", "json"],
                        cwd=workspace, capture_output=True, text=True, timeout=15)
-    import json
     containers = []
     for line in (r.stdout or "").strip().split("\n"):
         if line.strip():
@@ -171,11 +172,21 @@ def promote(site_id: str, domain: str) -> dict:
     if isinstance(labels, dict):
         labels = [f"{k}={v}" for k, v in labels.items()]
 
-    router = site["name"].replace("-", "").replace("_", "")
+    router = site["name"].replace("-", "").replace("_", "").replace(".", "")
+
+    # Find the existing service name from staging labels
+    svc_label_key = f"traefik.http.services.{router}.loadbalancer.server.port"
+    internal_port = "80"
+    for l in labels:
+        if svc_label_key in l:
+            internal_port = l.split("=")[-1]
+            break
+
     prod_labels = [
         f"traefik.http.routers.{router}-prod.rule=Host(`{domain}`)",
         f"traefik.http.routers.{router}-prod.entrypoints=websecure",
         f"traefik.http.routers.{router}-prod.tls.certresolver=letsencrypt",
+        f"traefik.http.routers.{router}-prod.service={router}",
     ]
 
     existing_keys = {l.split("=")[0] for l in labels if "=" in l}
@@ -190,11 +201,16 @@ def promote(site_id: str, domain: str) -> dict:
 
     # Recreate to pick up new labels
     project = f"pleng-{site['name']}"
-    subprocess.run(["docker", "compose", "-p", project, "up", "-d"],
-                   cwd=workspace, capture_output=True, text=True, timeout=120)
+    result = subprocess.run(["docker", "compose", "-p", project, "up", "-d"],
+                            cwd=workspace, capture_output=True, text=True, timeout=120)
+
+    if result.returncode != 0:
+        error = result.stderr[:300]
+        db.add_site_log(site_id, f"Promote failed: {error}", level="error")
+        raise RuntimeError(f"Promote deploy failed: {error}")
 
     db.update_site(site_id, production_domain=domain, status="production")
-    db.add_site_log(site_id, f"Promoted to production: {domain}")
+    db.add_site_log(site_id, f"Promoted to production: https://{domain}")
 
     return {
         "site_id": site_id,
@@ -236,7 +252,6 @@ def _deploy(site_id: str, name: str, workspace: str) -> dict:
 
     _connect_network(project)
 
-    from datetime import datetime
     url = f"http://{domain}"
     db.update_site(
         site_id,
