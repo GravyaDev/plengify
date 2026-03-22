@@ -1,30 +1,36 @@
 <p align="center">
   <h1 align="center">Pleng</h1>
-  <p align="center"><strong>The first self-hosted, AI-native PaaS.</strong></p>
+  <p align="center"><strong>Your AI Platform Engineer.</strong></p>
   <p align="center">
-    Install on any VPS. Deploy apps by talking to an AI agent.<br/>
-    Telegram, terminal, or any external AI tool via skill.md.
+    An AI agent that lives on your server, deploys your apps,<br/>
+    monitors your infra, and talks to you via Telegram.
   </p>
 </p>
 
 <p align="center">
-  <a href="#quickstart">Quickstart</a> · <a href="#how-it-works">How it works</a> · <a href="#the-4-doors">The 4 doors</a> · <a href="#architecture">Architecture</a> · <a href="#roadmap">Roadmap</a>
+  <a href="#quickstart">Quickstart</a> · <a href="#what-pleng-does">What it does</a> · <a href="#how-to-talk-to-it">How to talk to it</a> · <a href="#architecture">Architecture</a> · <a href="#roadmap">Roadmap</a>
 </p>
 
 ---
 
-## The problem
+## What if you had a platform engineer that never sleeps?
 
-Millions of devs use Claude Code, Cursor, Windsurf to generate code. Then they hit a wall:
+You tell it "deploy this". It clones the repo, writes the Dockerfile if needed, spins up the containers, puts Traefik in front, assigns a public URL with SSL, and tells you when it's done.
 
-> *"We're vibe coding in 2026. Why are we still deploying like it's 2018?"*
+You tell it "why is my API slow". It reads the Docker logs, finds the OOMKilled error, and suggests increasing the memory limit.
 
-- **Bolt / Lovable / Replit** — have hosting, but it's limited and vendor-locked.
-- **Claude Code / Cursor / Windsurf** — generate code, but have zero deploy story.
-- **Coolify / Dokploy** (50K+ stars) — self-hosted PaaS, but no AI. Passive dashboards for humans.
+You tell it "build me a landing page for my SaaS". It writes the code, creates the Docker config, deploys it, and gives you the URL.
+
+That's Pleng. A platform engineer that lives on your VPS, understands natural language, and operates your infrastructure autonomously.
+
+### Why this doesn't exist yet
+
+- **Coolify / Dokploy** (50K+ stars) — deploy apps, but they're passive dashboards. You click buttons. No agent, no intelligence, no natural language.
+- **Claude Code / Cursor** — write code, but can't deploy it. The "last mile" is still manual.
 - **Pulumi Neo / StackGen** — AI DevOps, but cloud-only, $10K+/month, enterprise.
+- **OpenClaw / Hermes** — AI personal agents, but they don't know how to manage Docker containers.
 
-The quadrant **"self-hosted + AI-native"** is completely empty. Pleng fills it.
+Nobody combined **self-hosted + AI agent + infrastructure management** in one package. Pleng does.
 
 ## Quickstart
 
@@ -55,32 +61,32 @@ TELEGRAM_CHAT_ID=123456789         # Your chat ID
 PUBLIC_IP=89.141.205.249           # Your VPS public IP
 ```
 
-## How it works
+## What Pleng does
 
-You tell the agent what you want. It does the rest.
-
-```
-You (Telegram): "hazme una API de reservas con Postgres"
-
-Agent: creates /projects/reservas/
-       writes app.py, Dockerfile, docker-compose.yml
-       runs: pleng deploy /projects/reservas --name reservas
-
-Platform API: docker compose up → Traefik labels → sslip.io subdomain
-
-Agent: "Listo. http://a3f2.89.141.205.249.sslip.io"
-```
-
-Later:
+You talk to it. It operates your server.
 
 ```
-You: "ponle reservas.midominio.com"
+You: "deploy github.com/user/my-api"
+Pleng: Cloning... detecting stack... deploying...
+       Live at http://a3f2.89.141.205.249.sslip.io
 
-Agent: runs: pleng promote reservas --domain reservas.midominio.com
+You: "build me a booking API with Postgres"
+Pleng: [writes code, Dockerfile, docker-compose.yml, deploys]
+       Live at http://fe01.89.141.205.249.sslip.io
 
-Platform API: updates Traefik → Let's Encrypt SSL
+You: "why is my web down?"
+Pleng: [reads Docker logs] Container OOMKilled. RAM limit too low.
+       Want me to bump it to 512MB?
 
-Agent: "Listo. https://reservas.midominio.com"
+You: "put bookings.mydomain.com on it"
+Pleng: [updates Traefik, Let's Encrypt SSL]
+       Live at https://bookings.mydomain.com
+
+You: "show me the logs for bookings"
+Pleng: [last 50 lines of Docker logs]
+
+You: "stop the demo and delete the staging"
+Pleng: Stopped and removed.
 ```
 
 ### The lifecycle
@@ -106,57 +112,50 @@ Agent: "Listo. https://reservas.midominio.com"
 
 | Mode | You say | What happens |
 |---|---|---|
-| **Git repo** | "despliega github.com/user/repo" | Clones, detects stack, deploys |
-| **Docker Compose** | "despliega este compose" (sends file) | Reads it, starts containers |
-| **AI Generate** | "hazme una tool de colores" | Claude Code writes everything, then deploys |
+| **Git repo** | "deploy github.com/user/repo" | Clones, detects stack, deploys |
+| **Docker Compose** | "deploy this compose" (sends file) | Reads it, starts containers |
+| **AI Generate** | "build me a color tool" | Claude Code writes everything, then deploys |
 
 All three produce the same result: containers running behind Traefik with a staging URL.
 
-## The 4 doors
+## How to talk to it
 
-Same agent, same workspace, same containers. Four ways in:
+Same engineer, four ways to reach it:
 
-### 1. Telegram (from anywhere)
+| Interface | When to use it |
+|---|---|
+| **Telegram** | From anywhere. Quick commands, status checks, deploys on the go. |
+| **Terminal** | On the VPS. Full Claude Code experience. Iterate for hours. |
+| **Dashboard** | In the browser. Read-only view of sites, logs, status. |
+| **skill.md** | From any external AI agent. Your Claude Code at home deploys to your server. |
+
+### Telegram
 ```
-You: "qué tal las visitas de mi landing?"
-Pleng: "42 visitors, 128 pageviews esta semana."
-
-You: "el API va lento, qué pasa"
-Pleng: [reads Docker logs, diagnoses] "El container está OOMKilled.
-        Recomiendo añadir mem_limit: 512m al compose."
-
-You: "reinicia reservas"
-Pleng: "Reiniciado."
+You: "restart bookings"             → Pleng: "Done."
+You: "logs for my-api"              → Pleng: [last 50 lines]
+You: "build me a fitness landing"   → Pleng: [writes code, deploys, returns URL]
 ```
-Quick commands from the subway. The agent resolves it alone.
 
-### 2. Terminal (on the VPS)
+### Terminal
 ```bash
-make chat
-# or: docker compose exec -it agent pleng chat
+make chat    # on your VPS
 
-You: despliega github.com/user/my-api --name bookings
+You: deploy github.com/user/repo --name my-app
 Pleng: Cloning... deploying... Live at http://a3f2.1.2.3.4.sslip.io
 ```
-Full Claude Code experience. Diffs, files, logs. Iterate for hours.
 
-### 3. Dashboard (read-only web panel)
+### Dashboard
+`http://panel.YOUR-IP.sslip.io` — password-protected. See all sites, their status, URLs, Docker logs, build history. **Read-only** — all operations go through the agent.
 
-`http://panel.YOUR-IP.sslip.io`
-
-See all your sites, their status, URLs, Docker logs, and build history. Password-protected. The dashboard is **read-only** — all operations go through the agent.
-
-### 4. Any external AI agent (skill.md)
-```
+### External agents (skill.md)
+```bash
 # From Claude Code on your Mac:
-You: "read http://panel.myserver.com/skill.md and deploy my project"
-
-Claude Code: [reads skill.md, learns the API, deploys your code to the VPS]
+"read http://panel.myserver.com/skill.md and deploy my project"
 ```
 
-The skill.md is auto-generated with the correct API URL for your instance. Any AI tool that can do HTTP can deploy to your Pleng. Authentication via API key (printed in logs on startup).
+The skill.md is auto-generated with the correct API URL and documents all endpoints. Any AI tool that can do HTTP can deploy to your Pleng. Auth via API key.
 
-**External agents only deploy existing code** (git repo or upload). They don't generate projects — that's what the built-in agent does.
+External agents **deploy existing code** (git repo or tar.gz upload). They don't generate projects — that's what the built-in agent does via Telegram/terminal.
 
 ## Architecture
 
@@ -345,7 +344,7 @@ pleng/
 - [ ] Backup and restore
 - [ ] Environment cloning (staging → prod)
 
-## Comparison
+## Why not just use Coolify?
 
 | | Coolify | Dokploy | Railway | **Pleng** |
 |---|---|---|---|---|
@@ -367,5 +366,5 @@ AGPL-3.0 — same license as Coolify. Self-host freely. If you modify the code a
 ---
 
 <p align="center">
-  <strong>One VPS. One command. Deploy anything by talking to it.</strong>
+  <strong>Your infra, your agent, your rules.</strong>
 </p>
