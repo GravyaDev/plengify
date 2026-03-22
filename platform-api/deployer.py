@@ -233,9 +233,8 @@ def _prepare_workspace(site_id: str) -> str:
 
 
 def _compose_cmd(project: str, workspace: str, *args) -> list[str]:
-    """Build a docker compose command with the correct file path for the host Docker daemon."""
-    host_workspace = _host_path(workspace)
-    compose_file = os.path.join(host_workspace, "docker-compose.yml")
+    """Build a docker compose command. Uses container path (CLI reads file locally)."""
+    compose_file = os.path.join(workspace, "docker-compose.yml")
     return ["docker", "compose", "-f", compose_file, "-p", project] + list(args)
 
 
@@ -247,12 +246,14 @@ def _deploy(site_id: str, name: str, workspace: str) -> dict:
     domain = staging_domain(name)
     _inject_traefik_labels(compose_file, name, domain)
 
+    # Rewrite build contexts to use host paths (Docker daemon runs on host, not in container)
+    _rewrite_build_contexts(compose_file, workspace)
+
     db.add_site_log(site_id, "Building and starting containers...")
     project = f"pleng-{name}"
-    host_workspace = _host_path(workspace)
 
     result = subprocess.run(
-        ["docker", "compose", "-f", os.path.join(host_workspace, "docker-compose.yml"), "-p", project, "up", "-d", "--build"],
+        _compose_cmd(project, workspace, "up", "-d", "--build"),
         capture_output=True, text=True, timeout=300,
     )
 
@@ -275,6 +276,54 @@ def _deploy(site_id: str, name: str, workspace: str) -> dict:
     db.add_site_log(site_id, f"Live at {url}")
 
     return {"site_id": site_id, "name": name, "status": "staging", "url": url, "domain": domain}
+
+
+def _rewrite_build_contexts(compose_file: str, workspace: str):
+    """Rewrite 'build: .' to absolute host paths so Docker daemon can find the files.
+
+    Docker CLI runs inside the container but Docker daemon runs on the host.
+    Relative build contexts resolve to container paths, which the daemon can't see.
+    """
+    if not PROJECTS_HOST_DIR:
+        return  # No host path mapping configured
+
+    try:
+        with open(compose_file) as f:
+            compose = yaml.safe_load(f)
+
+        if not compose or "services" not in compose:
+            return
+
+        host_workspace = _host_path(workspace)
+        changed = False
+
+        for svc_name, svc in compose.get("services", {}).items():
+            build = svc.get("build")
+            if build is None:
+                continue
+
+            if isinstance(build, str):
+                # build: . or build: ./subdir
+                if build == "." or build == "./":
+                    svc["build"] = host_workspace
+                elif build.startswith("./"):
+                    svc["build"] = os.path.join(host_workspace, build[2:])
+                changed = True
+
+            elif isinstance(build, dict):
+                ctx = build.get("context", ".")
+                if ctx == "." or ctx == "./":
+                    build["context"] = host_workspace
+                elif ctx.startswith("./"):
+                    build["context"] = os.path.join(host_workspace, ctx[2:])
+                changed = True
+
+        if changed:
+            with open(compose_file, "w") as f:
+                yaml.dump(compose, f, default_flow_style=False, sort_keys=False)
+
+    except Exception as e:
+        logger.warning(f"Failed to rewrite build contexts: {e}")
 
 
 def _inject_traefik_labels(compose_file: str, name: str, domain: str):
