@@ -18,9 +18,18 @@ import database as db
 logger = logging.getLogger(__name__)
 
 PROJECTS_DIR = os.environ.get("PROJECTS_DIR", "/projects")
+# Host path for Docker daemon context (volumes are at different path on host vs container)
+PROJECTS_HOST_DIR = os.environ.get("PROJECTS_HOST_DIR", "")
 PUBLIC_IP = os.environ.get("PUBLIC_IP", "127.0.0.1")
 BASE_DOMAIN = os.environ.get("BASE_DOMAIN", "")
 NETWORK = "pleng_web"
+
+
+def _host_path(container_path: str) -> str:
+    """Convert container path to host path for Docker daemon."""
+    if PROJECTS_HOST_DIR and container_path.startswith(PROJECTS_DIR):
+        return container_path.replace(PROJECTS_DIR, PROJECTS_HOST_DIR, 1)
+    return container_path
 
 
 def staging_domain(name: str) -> str:
@@ -81,9 +90,9 @@ def stop(site_id: str) -> bool:
     if not site:
         return False
     project = f"pleng-{site['name']}"
-    workspace = os.path.join(PROJECTS_DIR, site_id)
-    r = subprocess.run(["docker", "compose", "-p", project, "stop"],
-                       cwd=workspace, capture_output=True, text=True, timeout=60)
+    workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
+    r = subprocess.run(_compose_cmd(project, workspace, "stop"),
+                       capture_output=True, text=True, timeout=60)
     if r.returncode == 0:
         db.update_site(site_id, status="stopped")
         db.add_site_log(site_id, "Stopped")
@@ -96,9 +105,9 @@ def restart(site_id: str) -> bool:
     if not site:
         return False
     project = f"pleng-{site['name']}"
-    workspace = os.path.join(PROJECTS_DIR, site_id)
-    r = subprocess.run(["docker", "compose", "-p", project, "restart"],
-                       cwd=workspace, capture_output=True, text=True, timeout=60)
+    workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
+    r = subprocess.run(_compose_cmd(project, workspace, "restart"),
+                       capture_output=True, text=True, timeout=60)
     if r.returncode == 0:
         db.update_site(site_id, status="staging" if not site.get("production_domain") else "production")
         db.add_site_log(site_id, "Restarted")
@@ -111,9 +120,9 @@ def remove(site_id: str) -> bool:
     if not site:
         return False
     project = f"pleng-{site['name']}"
-    workspace = os.path.join(PROJECTS_DIR, site_id)
-    subprocess.run(["docker", "compose", "-p", project, "down", "-v", "--remove-orphans"],
-                   cwd=workspace, capture_output=True, text=True, timeout=60)
+    workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
+    subprocess.run(_compose_cmd(project, workspace, "down", "-v", "--remove-orphans"),
+                   capture_output=True, text=True, timeout=60)
     db.delete_site(site_id)
     if os.path.exists(workspace):
         shutil.rmtree(workspace, ignore_errors=True)
@@ -125,9 +134,9 @@ def docker_logs(site_id: str, lines: int = 100) -> str:
     if not site:
         return "Site not found"
     project = f"pleng-{site['name']}"
-    workspace = os.path.join(PROJECTS_DIR, site_id)
-    r = subprocess.run(["docker", "compose", "-p", project, "logs", "--tail", str(lines)],
-                       cwd=workspace, capture_output=True, text=True, timeout=30)
+    workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
+    r = subprocess.run(_compose_cmd(project, workspace, "logs", "--tail", str(lines)),
+                       capture_output=True, text=True, timeout=30)
     return r.stdout or r.stderr or "No logs"
 
 
@@ -136,9 +145,9 @@ def container_status(site_id: str) -> list[dict]:
     if not site:
         return []
     project = f"pleng-{site['name']}"
-    workspace = os.path.join(PROJECTS_DIR, site_id)
-    r = subprocess.run(["docker", "compose", "-p", project, "ps", "--format", "json"],
-                       cwd=workspace, capture_output=True, text=True, timeout=15)
+    workspace = site.get("project_path") or os.path.join(PROJECTS_DIR, site_id)
+    r = subprocess.run(_compose_cmd(project, workspace, "ps", "--format", "json"),
+                       capture_output=True, text=True, timeout=15)
     containers = []
     for line in (r.stdout or "").strip().split("\n"):
         if line.strip():
@@ -196,8 +205,8 @@ def promote(site_id: str, domain: str) -> dict:
 
     # Recreate to pick up new labels
     project = f"pleng-{site['name']}"
-    result = subprocess.run(["docker", "compose", "-p", project, "up", "-d"],
-                            cwd=workspace, capture_output=True, text=True, timeout=120)
+    result = subprocess.run(_compose_cmd(project, workspace, "up", "-d"),
+                            capture_output=True, text=True, timeout=120)
 
     if result.returncode != 0:
         error = result.stderr[:300]
@@ -223,6 +232,13 @@ def _prepare_workspace(site_id: str) -> str:
     return workspace
 
 
+def _compose_cmd(project: str, workspace: str, *args) -> list[str]:
+    """Build a docker compose command with the correct file path for the host Docker daemon."""
+    host_workspace = _host_path(workspace)
+    compose_file = os.path.join(host_workspace, "docker-compose.yml")
+    return ["docker", "compose", "-f", compose_file, "-p", project] + list(args)
+
+
 def _deploy(site_id: str, name: str, workspace: str) -> dict:
     compose_file = os.path.join(workspace, "docker-compose.yml")
     if not os.path.exists(compose_file):
@@ -233,10 +249,11 @@ def _deploy(site_id: str, name: str, workspace: str) -> dict:
 
     db.add_site_log(site_id, "Building and starting containers...")
     project = f"pleng-{name}"
+    host_workspace = _host_path(workspace)
 
     result = subprocess.run(
-        ["docker", "compose", "-p", project, "up", "-d", "--build"],
-        cwd=workspace, capture_output=True, text=True, timeout=300,
+        ["docker", "compose", "-f", os.path.join(host_workspace, "docker-compose.yml"), "-p", project, "up", "-d", "--build"],
+        capture_output=True, text=True, timeout=300,
     )
 
     if result.returncode != 0:

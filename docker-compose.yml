@@ -34,6 +34,7 @@ services:
       - WEB_UI_PASSWORD=${WEB_UI_PASSWORD:-admin}
       - DATABASE_PATH=/data/pleng.db
       - PROJECTS_DIR=/projects
+      - PROJECTS_HOST_DIR=/var/lib/docker/volumes/pleng_projects/_data
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
