@@ -31,20 +31,15 @@ def staging_domain(name: str) -> str:
 
 def deploy_compose(site_id: str, name: str, compose_source: str) -> dict:
     """Deploy from an existing docker-compose.yml path or directory."""
-    workspace = _prepare_workspace(site_id)
-
-    if os.path.isfile(compose_source):
+    # If source is a directory with a docker-compose.yml, use it directly as workspace
+    if os.path.isdir(compose_source) and os.path.exists(os.path.join(compose_source, "docker-compose.yml")):
+        workspace = compose_source
+        db.update_site(site_id, project_path=workspace)
+    elif os.path.isfile(compose_source):
+        workspace = _prepare_workspace(site_id)
         shutil.copy2(compose_source, os.path.join(workspace, "docker-compose.yml"))
-    elif os.path.isdir(compose_source):
-        for item in os.listdir(compose_source):
-            src = os.path.join(compose_source, item)
-            dst = os.path.join(workspace, item)
-            if os.path.isdir(src):
-                shutil.copytree(src, dst, dirs_exist_ok=True)
-            else:
-                shutil.copy2(src, dst)
     else:
-        raise FileNotFoundError(f"Source not found: {compose_source}")
+        raise FileNotFoundError(f"Source not found or no docker-compose.yml: {compose_source}")
 
     return _deploy(site_id, name, workspace)
 
