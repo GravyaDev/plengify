@@ -34,11 +34,11 @@ services:
       - WEB_UI_PASSWORD=${WEB_UI_PASSWORD:-admin}
       - DATABASE_PATH=/data/pleng.db
       - PROJECTS_DIR=/projects
-      - PROJECTS_HOST_DIR=/var/lib/docker/volumes/pleng_projects/_data
+      - PROJECTS_HOST_DIR=${PROJECTS_PATH:-/opt/pleng/projects}
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - projects:/projects
+      - ${PROJECTS_PATH:-/opt/pleng/projects}:/projects
       - platform_data:/data
     networks:
       - web
@@ -69,7 +69,7 @@ services:
       - PLATFORM_API_URL=http://platform-api:8000
       - PROJECTS_DIR=/projects
     volumes:
-      - projects:/projects
+      - ${PROJECTS_PATH:-/opt/pleng/projects}:/projects
       - ~/.claude:/home/claude/.claude
       - ~/.claude.json:/tmp/.claude.json.host:ro
     networks:
@@ -144,7 +144,6 @@ networks:
   internal:
 
 volumes:
-  projects:
   platform_data:
   analytics_data:
   letsencrypt:
