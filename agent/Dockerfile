@@ -12,6 +12,10 @@ RUN npm install -g @anthropic-ai/claude-code
 RUN useradd -m -s /bin/bash claude && \
     echo "claude ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
+# Install Claude Code skills (design + SEO)
+RUN su - claude -c "npx skills add https://github.com/anthropics/skills --skill frontend-design" && \
+    su - claude -c "npx skills add https://github.com/resciencelab/opc-skills --skill seo-geo"
+
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
