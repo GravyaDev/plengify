@@ -69,8 +69,10 @@ export default function SiteDetailPage() {
             </span>
           </div>
           {url && (
-            <a href={url} target="_blank" rel="noreferrer" className="text-sm text-primary-400 hover:underline flex items-center gap-1 mt-1">
-              <ExternalLink size={14} /> {domain}
+            <a href={url} target="_blank" rel="noreferrer"
+              className="inline-flex items-center gap-2 mt-2 px-4 py-2 bg-primary-600/10 border border-primary-500/30 rounded-lg text-primary-400 hover:bg-primary-600/20 transition-colors">
+              <ExternalLink size={16} />
+              <span className="text-sm font-medium">{url}</span>
             </a>
           )}
         </div>

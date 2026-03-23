@@ -67,7 +67,7 @@ async def auth_middleware(request: Request, call_next):
     path = request.url.path
 
     # Public endpoints — no auth
-    if path in ("/api/health", "/skill.md", "/api/collect", "/t.js", "/api/auth/login"):
+    if path in ("/api/health", "/skill.md", "/api/collect", "/t.js", "/api/auth/login", "/api/setup-status"):
         return await call_next(request)
     if path == "/internal/key":
         return await call_next(request)
@@ -429,3 +429,33 @@ curl -s -X POST $API/api/sites/my-app/promote \\
 @app.get("/api/health")
 def health():
     return {"status": "ok", "sites": len(db.get_all_sites())}
+
+
+@app.get("/api/setup-status")
+def setup_status():
+    """What's configured and what's missing. Used by dashboard onboarding."""
+    telegram_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    telegram_chat = os.environ.get("TELEGRAM_CHAT_ID", "")
+    ip = os.environ.get("PUBLIC_IP", "")
+
+    # Get bot username (cached)
+    bot_username = ""
+    if telegram_token:
+        if not hasattr(setup_status, "_bot"):
+            try:
+                r = requests.get(f"https://api.telegram.org/bot{telegram_token}/getMe", timeout=5)
+                if r.status_code == 200:
+                    setup_status._bot = r.json().get("result", {}).get("username", "")
+            except Exception:
+                setup_status._bot = ""
+        bot_username = getattr(setup_status, "_bot", "")
+
+    sites = db.get_all_sites()
+
+    return {
+        "telegram_configured": bool(telegram_token and telegram_chat),
+        "telegram_bot": bot_username,
+        "public_ip": ip,
+        "sites_count": len(sites),
+        "panel_url": f"http://panel.{ip}.sslip.io" if ip else "",
+    }
