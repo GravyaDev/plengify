@@ -47,6 +47,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${PROJECTS_PATH:-/opt/pleng/projects}:${PROJECTS_PATH:-/opt/pleng/projects}
+      - /opt/pleng/backups:/opt/pleng/backups
       - platform_data:/data
       - traefik_logs:/var/log/traefik:ro
     networks:

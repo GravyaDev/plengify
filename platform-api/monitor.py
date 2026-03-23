@@ -32,8 +32,8 @@ def start():
     threading.Thread(target=_health_loop, daemon=True).start()
     logger.info(f"Health monitor started (interval={CHECK_INTERVAL}s)")
 
-    threading.Thread(target=_prune_loop, daemon=True).start()
-    logger.info(f"Docker prune scheduler started (interval=24h)")
+    threading.Thread(target=_maintenance_loop, daemon=True).start()
+    logger.info(f"Maintenance scheduler started (backup + prune every 24h)")
 
 
 # ── Health checks ───────────────────────────────────────
@@ -93,9 +93,13 @@ def _mark_healthy(site: dict):
 
 # ── Docker prune ────────────────────────────────────────
 
-def _prune_loop():
+def _maintenance_loop():
     time.sleep(300)  # Wait 5 min after startup
     while True:
+        try:
+            _backup()
+        except Exception as e:
+            logger.error(f"Backup error: {e}")
         try:
             _docker_prune()
         except Exception as e:
@@ -103,14 +107,69 @@ def _prune_loop():
         time.sleep(PRUNE_INTERVAL)
 
 
+# ── Backups ─────────────────────────────────────────────
+
+BACKUP_DIR = "/opt/pleng/backups"
+BACKUP_KEEP = 7  # Keep last 7 backups
+
+def _backup():
+    """Backup SQLite DB + site compose files. Keeps last 7 days."""
+    import glob
+    import shutil
+    import tarfile
+    from datetime import datetime
+
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d_%H%M")
+    backup_file = os.path.join(BACKUP_DIR, f"pleng-{timestamp}.tar.gz")
+
+    db_path = os.environ.get("DATABASE_PATH", "/data/pleng.db")
+    projects_dir = os.environ.get("PROJECTS_DIR", "/opt/pleng/projects")
+
+    try:
+        with tarfile.open(backup_file, "w:gz") as tar:
+            # Backup SQLite DB
+            if os.path.exists(db_path):
+                tar.add(db_path, arcname="pleng.db")
+
+            # Backup docker-compose files from each project (not full code — just configs)
+            if os.path.exists(projects_dir):
+                for name in os.listdir(projects_dir):
+                    proj = os.path.join(projects_dir, name)
+                    if not os.path.isdir(proj):
+                        continue
+                    for fname in ("docker-compose.yml", "docker-compose.pleng.yml", "Dockerfile", ".env"):
+                        fpath = os.path.join(proj, fname)
+                        if os.path.exists(fpath):
+                            tar.add(fpath, arcname=f"projects/{name}/{fname}")
+
+        size = os.path.getsize(backup_file)
+        size_str = f"{size / 1024:.1f}KB" if size < 1048576 else f"{size / 1048576:.1f}MB"
+        logger.info(f"Backup created: {backup_file} ({size_str})")
+
+        # Clean old backups
+        backups = sorted(glob.glob(os.path.join(BACKUP_DIR, "pleng-*.tar.gz")))
+        while len(backups) > BACKUP_KEEP:
+            old = backups.pop(0)
+            os.remove(old)
+            logger.info(f"Deleted old backup: {old}")
+
+        sites_count = len(db.get_all_sites())
+        _alert(f"💾 Backup done: {size_str}, {sites_count} sites")
+
+    except Exception as e:
+        logger.error(f"Backup failed: {e}")
+        _alert(f"⚠️ Backup failed: {e}")
+
+
+# ── Docker prune ────────────────────────────────────────
+
 def _docker_prune():
     """Remove unused Docker images and build cache."""
-    # Remove dangling images
     r1 = subprocess.run(
         ["docker", "image", "prune", "-f"],
         capture_output=True, text=True, timeout=120,
     )
-    # Remove build cache older than 7 days
     r2 = subprocess.run(
         ["docker", "builder", "prune", "-f", "--filter", "until=168h"],
         capture_output=True, text=True, timeout=120,
@@ -120,7 +179,6 @@ def _docker_prune():
     freed2 = r2.stdout.strip().split("\n")[-1] if r2.stdout else "0B"
     logger.info(f"Docker prune: images={freed1}, cache={freed2}")
 
-    # Notify via Telegram
     if "0B" not in freed1 or "0B" not in freed2:
         _alert(f"🧹 Docker cleanup: {freed1}, {freed2}")
 
