@@ -112,29 +112,6 @@ services:
       agent:
         condition: service_healthy
 
-  # ── Analytics ─────────────────────────────────────────
-  analytics:
-    build: ./analytics
-    restart: unless-stopped
-    environment:
-      - DATABASE_PATH=/data/analytics.db
-    volumes:
-      - analytics_data:/data
-    networks:
-      - web
-      - internal
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.services.analytics.loadbalancer.server.port=8000"
-      - "traefik.http.routers.analytics-collect.rule=PathPrefix(`/api/collect`)"
-      - "traefik.http.routers.analytics-collect.entrypoints=web"
-      - "traefik.http.routers.analytics-collect.priority=200"
-      - "traefik.http.routers.analytics-collect.service=analytics"
-      - "traefik.http.routers.analytics-script.rule=Path(`/t.js`)"
-      - "traefik.http.routers.analytics-script.entrypoints=web"
-      - "traefik.http.routers.analytics-script.priority=200"
-      - "traefik.http.routers.analytics-script.service=analytics"
-
   # ── Dashboard ─────────────────────────────────────────
   dashboard:
     build: ./dashboard
@@ -158,6 +135,5 @@ networks:
 
 volumes:
   platform_data:
-  analytics_data:
   letsencrypt:
   traefik_logs:
