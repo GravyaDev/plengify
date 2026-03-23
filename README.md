@@ -59,6 +59,7 @@ ANTHROPIC_API_KEY=sk-ant-...       # For the AI agent (Claude Code)
 TELEGRAM_BOT_TOKEN=123456:ABC...   # From @BotFather
 TELEGRAM_CHAT_ID=123456789         # Your chat ID
 PUBLIC_IP=89.141.205.249           # Your VPS public IP
+ACME_EMAIL=you@example.com         # For SSL certificates (Let's Encrypt)
 ```
 
 ## What Pleng does
@@ -220,13 +221,13 @@ skill.md             →  public (documents the API, tells agents to use the key
 | `TELEGRAM_BOT_TOKEN` | From @BotFather |
 | `TELEGRAM_CHAT_ID` | Your Telegram chat ID |
 | `PUBLIC_IP` | Your VPS public IP (`curl ifconfig.me` to find it) |
+| `ACME_EMAIL` | Your email (required by Let's Encrypt for SSL certificates) |
 
 ### Optional
 
 | Variable | Default | Description |
 |---|---|---|
 | `BASE_DOMAIN` | — | Custom domain for the panel (enables HTTPS for panel) |
-| `ACME_EMAIL` | admin@example.com | Email for Let's Encrypt certificates |
 | `MODEL_NAME` | claude-sonnet-4-20250514 | Claude model for the agent |
 | `GITHUB_TOKEN` | — | For deploying from private repos |
 | `WEB_UI_PASSWORD` | admin | Dashboard login password |
