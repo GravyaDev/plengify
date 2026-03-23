@@ -33,6 +33,24 @@ Install Pleng on any VPS and you get all of this out of the box:
 | **Uptime Kuma** — monitoring + alerts | Health checks every 10 min. Auto-restart. Telegram alerts. |
 | **OpenClaw / AI agent** — an AI that does things for you | Claude Code agent that writes code, deploys, diagnoses, operates. |
 
+### Built for AI agents, not just humans
+
+Coolify, Dokploy, Plausible — they're dashboards built for humans clicking buttons. They have no API that an AI agent can use. They don't understand natural language. They can't be operated programmatically.
+
+**Pleng is designed from the ground up for AI agents.** Every operation is available through:
+- Natural language (Telegram / terminal)
+- REST API (for any agent or script)
+- **skill.md** — a machine-readable instruction file that any AI agent can read and immediately know how to deploy, manage, and monitor your apps
+
+This means you can connect **any AI agent** to your Pleng:
+
+```bash
+# OpenClaw, Claude Code, Cursor, Windsurf, any agent:
+"read http://panel.YOUR-IP.sslip.io/skill.md and deploy my project"
+```
+
+The agent reads `skill.md`, learns the API, authenticates with the API key, and starts deploying. No plugins. No integrations. One URL.
+
 All self-hosted. All in 6 containers. All operated by talking to it.
 
 ### What this replaces
@@ -125,18 +143,28 @@ You: "list my sites"                → All sites with URLs and status
 You: "redeploy my-app"              → Rebuild + restart
 ```
 
-### 6. "Connect my local dev environment"
+### 6. "Connect any AI agent"
 
-Working on your Mac with Claude Code? It can deploy to your server too.
+Any AI agent that can read a URL and make HTTP calls can operate your Pleng. No plugins, no integrations, no setup.
 
-```bash
-# Your local Claude Code reads the API docs:
+```
+# From Claude Code on your Mac:
 "read http://panel.myserver.com/skill.md and deploy this project"
 
-# Claude Code makes API calls to your Pleng, deploys your code remotely
+# From OpenClaw:
+"connect to my Pleng at http://panel.myserver.com/skill.md"
+
+# From Cursor, Windsurf, any agent:
+Same thing. Read the skill.md. Done.
 ```
 
-The `skill.md` is auto-generated with your server's API URL. Any AI tool that can do HTTP can deploy to your Pleng.
+The `skill.md` is auto-generated and always up to date with your server's IP, API URL, and all available operations. The agent reads it once and knows how to:
+- Deploy from git or upload
+- Check status and logs
+- Stop, restart, redeploy
+- Promote to production with SSL
+
+One URL. That's the entire integration.
 
 ## How to talk to it
 
