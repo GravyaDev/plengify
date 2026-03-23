@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  platform-api:
+    name: Platform API (lint + tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: platform-api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -m pytest tests/ -v
+      - run: python -m py_compile app.py
+      - run: python -m py_compile deployer.py
+      - run: python -m py_compile database.py
+      - run: python -m py_compile monitor.py
+      - run: python -m py_compile analytics.py
+
+  pleng-cli:
+    name: Pleng CLI (tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent/tools
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests pytest
+      - run: python -m pytest tests/ -v
+
+  dashboard:
+    name: Dashboard (build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - run: npm run build
+
+  docker:
+    name: Docker Compose (validate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose config --quiet

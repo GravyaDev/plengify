@@ -192,3 +192,13 @@ def get_or_create_api_key() -> str:
         key = "pleng_" + secrets.token_hex(24)
         set_setting("api_key", key)
     return key
+
+
+def get_or_create_password() -> str:
+    """Get existing dashboard password or generate a random one on first boot."""
+    import secrets
+    password = get_setting("dashboard_password")
+    if not password:
+        password = secrets.token_urlsafe(16)
+        set_setting("dashboard_password", password)
+    return password

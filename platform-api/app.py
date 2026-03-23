@@ -46,17 +46,28 @@ def _is_internal(ip: str) -> bool:
         return False
 
 
+_dashboard_password = ""
+
 @app.on_event("startup")
 def startup():
-    global _api_key
+    global _api_key, _dashboard_password
     db.init()
     _api_key = db.get_or_create_api_key()
+
+    # Dashboard password: env var > DB > generate random
+    env_pass = os.environ.get("WEB_UI_PASSWORD", "")
+    if env_pass and env_pass != "admin":
+        _dashboard_password = env_pass
+    else:
+        _dashboard_password = db.get_or_create_password()
+
     ip = os.environ.get("PUBLIC_IP", "?")
     logger.info("=" * 60)
     logger.info("  Pleng Platform API ready")
-    logger.info(f"  PUBLIC_IP: {ip}")
-    logger.info(f"  Panel:     http://panel.{ip}.sslip.io")
-    logger.info(f"  API Key:   {_api_key}")
+    logger.info(f"  PUBLIC_IP:  {ip}")
+    logger.info(f"  Panel:      http://panel.{ip}.sslip.io")
+    logger.info(f"  API Key:    {_api_key[:16]}...")
+    logger.info(f"  Password:   {_dashboard_password}")
     logger.info("=" * 60)
 
     # Start health monitor
@@ -122,8 +133,7 @@ class LoginRequest(BaseModel):
 @app.post("/api/auth/login")
 def login(body: LoginRequest):
     """Dashboard login. Returns API key if password matches."""
-    expected = os.environ.get("WEB_UI_PASSWORD", "admin")
-    if body.password != expected:
+    if body.password != _dashboard_password:
         raise HTTPException(401, "Wrong password")
     return {"api_key": _api_key}
 
