@@ -15,6 +15,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
+import requests as http_requests
+
 import database as db
 import deployer
 
@@ -443,7 +445,7 @@ def setup_status():
     if telegram_token:
         if not hasattr(setup_status, "_bot"):
             try:
-                r = requests.get(f"https://api.telegram.org/bot{telegram_token}/getMe", timeout=5)
+                r = http_requests.get(f"https://api.telegram.org/bot{telegram_token}/getMe", timeout=5)
                 if r.status_code == 200:
                     setup_status._bot = r.json().get("result", {}).get("username", "")
             except Exception:
