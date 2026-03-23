@@ -1,11 +1,12 @@
-"""Health monitor — checks deployed sites every 60s and alerts via Telegram.
+"""Health monitor + maintenance scheduler.
 
-- Pings each site's public URL
-- After 3 consecutive failures: sends Telegram alert + auto-restarts
-- When recovered: sends recovery alert
+- Health checks: pings deployed sites every 10 min, alerts via Telegram
+- Docker prune: cleans unused images/cache every 24h
+- Extensible: add more scheduled tasks as needed
 """
 import logging
 import os
+import subprocess
 import threading
 import time
 
@@ -17,32 +18,35 @@ import deployer
 logger = logging.getLogger("monitor")
 
 CHECK_INTERVAL = int(os.environ.get("MONITOR_INTERVAL", "600"))  # 10 minutes
+PRUNE_INTERVAL = 86400  # 24 hours
 FAILURE_THRESHOLD = 3
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 
 def start():
-    """Start the background monitoring thread."""
+    """Start background threads."""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("Telegram not configured — monitor will check sites but won't send alerts")
-    thread = threading.Thread(target=_loop, daemon=True)
-    thread.start()
-    logger.info(f"Health monitor started (interval={CHECK_INTERVAL}s, threshold={FAILURE_THRESHOLD})")
+        logger.warning("Telegram not configured — monitor won't send alerts")
+
+    threading.Thread(target=_health_loop, daemon=True).start()
+    logger.info(f"Health monitor started (interval={CHECK_INTERVAL}s)")
+
+    threading.Thread(target=_prune_loop, daemon=True).start()
+    logger.info(f"Docker prune scheduler started (interval=24h)")
 
 
-def _loop():
-    # Wait for initial deploys to settle
-    time.sleep(30)
+# ── Health checks ───────────────────────────────────────
 
+def _health_loop():
+    time.sleep(30)  # Wait for initial deploys
     while True:
         try:
-            sites = db.get_all_sites()
-            for site in sites:
+            for site in db.get_all_sites():
                 if site["status"] in ("staging", "production"):
                     _check_site(site)
         except Exception as e:
-            logger.error(f"Monitor loop error: {e}")
+            logger.error(f"Health loop error: {e}")
         time.sleep(CHECK_INTERVAL)
 
 
@@ -62,7 +66,7 @@ def _check_site(site: dict):
     except requests.ConnectionError:
         _mark_failure(site, "Connection refused")
     except requests.Timeout:
-        _mark_failure(site, "Timeout (10s)")
+        _mark_failure(site, "Timeout")
     except Exception as e:
         _mark_failure(site, str(e)[:100])
 
@@ -73,31 +77,56 @@ def _mark_failure(site: dict, error: str):
 
     if failures == FAILURE_THRESHOLD:
         _alert(f"🔴 <b>{site['name']}</b> is DOWN\n{error}")
-        # Try auto-restart
-        logger.info(f"Auto-restarting {site['name']}...")
         ok = deployer.restart(site["id"])
-        if ok:
-            _alert(f"🔄 Auto-restarted <b>{site['name']}</b>")
-        else:
-            _alert(f"⚠️ Auto-restart failed for <b>{site['name']}</b>")
-        db.add_site_log(site["id"], f"Health check failed ({error}), auto-restart {'ok' if ok else 'failed'}", level="warning")
+        _alert(f"🔄 Auto-restart {'ok' if ok else 'FAILED'}: <b>{site['name']}</b>")
+        db.add_site_log(site["id"], f"DOWN: {error}. Auto-restart {'ok' if ok else 'failed'}", level="warning")
 
 
 def _mark_healthy(site: dict):
     failures = db.get_failures(site["id"])
     if failures >= FAILURE_THRESHOLD:
         _alert(f"🟢 <b>{site['name']}</b> is back UP")
-        db.add_site_log(site["id"], "Recovered after health check failure")
+        db.add_site_log(site["id"], "Recovered")
     if failures > 0:
         db.reset_failures(site["id"])
 
 
+# ── Docker prune ────────────────────────────────────────
+
+def _prune_loop():
+    time.sleep(300)  # Wait 5 min after startup
+    while True:
+        try:
+            _docker_prune()
+        except Exception as e:
+            logger.error(f"Prune error: {e}")
+        time.sleep(PRUNE_INTERVAL)
+
+
+def _docker_prune():
+    """Remove unused Docker images and build cache."""
+    # Remove dangling images
+    r1 = subprocess.run(
+        ["docker", "image", "prune", "-f"],
+        capture_output=True, text=True, timeout=120,
+    )
+    # Remove build cache older than 7 days
+    r2 = subprocess.run(
+        ["docker", "builder", "prune", "-f", "--filter", "until=168h"],
+        capture_output=True, text=True, timeout=120,
+    )
+
+    freed1 = r1.stdout.strip().split("\n")[-1] if r1.stdout else ""
+    freed2 = r2.stdout.strip().split("\n")[-1] if r2.stdout else ""
+    logger.info(f"Docker prune: images={freed1}, cache={freed2}")
+
+
+# ── Telegram ────────────────────────────────────────────
+
 def _alert(message: str):
-    """Send alert via Telegram."""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         logger.info(f"Alert (no Telegram): {message}")
         return
-
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",

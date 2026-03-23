@@ -4,7 +4,7 @@ services:
     image: traefik:v3.6
     restart: unless-stopped
     command:
-      - "--api.insecure=true"
+      - "--api.insecure=true"   # Only accessible from localhost (port not exposed)
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
       - "--providers.docker.network=pleng_web"
@@ -17,7 +17,7 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"  # Traefik dashboard — localhost only
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - letsencrypt:/letsencrypt
