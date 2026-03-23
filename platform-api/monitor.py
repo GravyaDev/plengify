@@ -116,9 +116,13 @@ def _docker_prune():
         capture_output=True, text=True, timeout=120,
     )
 
-    freed1 = r1.stdout.strip().split("\n")[-1] if r1.stdout else ""
-    freed2 = r2.stdout.strip().split("\n")[-1] if r2.stdout else ""
+    freed1 = r1.stdout.strip().split("\n")[-1] if r1.stdout else "0B"
+    freed2 = r2.stdout.strip().split("\n")[-1] if r2.stdout else "0B"
     logger.info(f"Docker prune: images={freed1}, cache={freed2}")
+
+    # Notify via Telegram
+    if "0B" not in freed1 or "0B" not in freed2:
+        _alert(f"🧹 Docker cleanup: {freed1}, {freed2}")
 
 
 # ── Telegram ────────────────────────────────────────────
