@@ -26,7 +26,10 @@ chown claude:claude /home/claude/.bashrc
 echo "PLATFORM_API_URL=${PLATFORM_API_URL:-http://platform-api:8000}" >> /etc/environment
 echo "PROJECTS_DIR=$PROJECTS" >> /etc/environment
 
-# Setup workspace CLAUDE.md
-cp /app/workspace/CLAUDE.md "$PROJECTS/CLAUDE.md" 2>/dev/null || true
+# Setup workspace CLAUDE.md (only on first boot — don't overwrite user edits)
+if [ ! -f "$PROJECTS/CLAUDE.md" ]; then
+    cp /app/workspace/CLAUDE.md "$PROJECTS/CLAUDE.md" 2>/dev/null || true
+    echo "Copied default CLAUDE.md to $PROJECTS/CLAUDE.md"
+fi
 
 exec python /app/server.py

@@ -11,6 +11,12 @@ Usage:
     pleng restart <name>                Restart a site
     pleng remove <name>                 Remove a site
     pleng promote <name> --domain <d>   Promote to production with custom domain
+    pleng system                        System stats (CPU, RAM, disk, load)
+    pleng docker-ps                     All Docker containers
+    pleng docker-stats                  CPU/RAM per container
+    pleng errors [--minutes 60]         Recent Traefik 5xx errors
+    pleng logs-summary                  Recent errors from all sites
+    pleng health-report                 Full system health report
     pleng chat                          Interactive chat (for terminal use)
 """
 import json
@@ -201,6 +207,125 @@ def cmd_promote(args: list[str]):
     _print_result(result)
 
 
+def cmd_system():
+    """System stats: disk, memory, load, uptime."""
+    data = _get("/internal/system-stats")
+    if "error" in data:
+        print(f"Error: {data['error']}"); return
+
+    disk = data.get("disk", {})
+    mem = data.get("memory", {})
+    load = data.get("load", {})
+
+    print("=== System Stats ===")
+    print(f"\nDisk:    {disk.get('used', '?')} / {disk.get('total', '?')} ({disk.get('percent', '?')})")
+    print(f"Memory:  {mem.get('used_mb', '?')}MB / {mem.get('total_mb', '?')}MB (available: {mem.get('available_mb', '?')}MB)")
+    print(f"Load:    {load.get('1m', '?')} / {load.get('5m', '?')} / {load.get('15m', '?')}")
+    print(f"Uptime:  {data.get('uptime', '?')}")
+
+
+def cmd_docker_ps():
+    """List all Docker containers on the host."""
+    data = _get("/internal/docker-ps")
+    if isinstance(data, dict) and "error" in data:
+        print(f"Error: {data['error']}"); return
+    if not data:
+        print("No containers running."); return
+
+    print(f"{'NAME':<35} {'STATE':<12} {'STATUS':<25} {'IMAGE'}")
+    print("-" * 100)
+    for c in data:
+        print(f"{c.get('Names', '?'):<35} {c.get('State', '?'):<12} {c.get('Status', '?'):<25} {c.get('Image', '?')}")
+
+
+def cmd_docker_stats():
+    """CPU and RAM per running container."""
+    data = _get("/internal/docker-stats")
+    if isinstance(data, dict) and "error" in data:
+        print(f"Error: {data['error']}"); return
+    if not data:
+        print("No containers running."); return
+
+    print(f"{'NAME':<35} {'CPU':<10} {'MEM USAGE':<25} {'MEM %'}")
+    print("-" * 80)
+    for c in data:
+        print(f"{c.get('Name', '?'):<35} {c.get('CPUPerc', '?'):<10} {c.get('MemUsage', '?'):<25} {c.get('MemPerc', '?')}")
+
+
+def cmd_errors(args: list[str]):
+    """Recent Traefik 5xx errors."""
+    minutes = int(_flag(args, "--minutes") or "60")
+    data = _get(f"/internal/traefik-errors?minutes={minutes}")
+    if isinstance(data, dict) and "error" in data:
+        print(f"Error: {data['error']}"); return
+
+    print(f"=== Traefik Errors (last {minutes} min) ===")
+    print(f"Total requests: {data.get('total_requests', 0)}")
+    print(f"5xx errors:     {data.get('errors_5xx', 0)}")
+    print(f"Error rate:     {data.get('error_rate', '0%')}")
+
+    by_domain = data.get("by_domain", {})
+    if by_domain:
+        print(f"\nBy domain:")
+        for domain, count in sorted(by_domain.items(), key=lambda x: -x[1]):
+            print(f"  {domain}: {count}")
+
+    recent = data.get("recent_errors", [])
+    if recent:
+        print(f"\nRecent errors (last {len(recent)}):")
+        for e in recent[-10:]:
+            print(f"  [{e.get('time', '?')}] {e.get('status')} {e.get('domain', '?')}{e.get('path', '')}")
+
+
+def cmd_logs_summary():
+    """Recent errors from all deployed sites."""
+    data = _get("/internal/logs-summary")
+    if isinstance(data, dict) and "error" in data:
+        print(f"Error: {data['error']}"); return
+    if not data:
+        print("No errors found in any site logs."); return
+
+    for site_name, errors in data.items():
+        print(f"\n=== {site_name} ({len(errors)} errors) ===")
+        for line in errors[-10:]:
+            print(f"  {line}")
+
+
+def cmd_health_report():
+    """Full system health report — calls all observability endpoints."""
+    print("=" * 60)
+    print("  PLENG HEALTH REPORT")
+    print("=" * 60)
+
+    # System stats
+    print("\n--- System Resources ---")
+    cmd_system()
+
+    # Docker containers
+    print("\n--- Docker Containers ---")
+    cmd_docker_ps()
+
+    # Docker resource usage
+    print("\n--- Container Resources ---")
+    cmd_docker_stats()
+
+    # Sites
+    print("\n--- Deployed Sites ---")
+    cmd_sites()
+
+    # Traefik errors
+    print("\n--- Traefik Errors (last 60 min) ---")
+    cmd_errors(["--minutes", "60"])
+
+    # Site log errors
+    print("\n--- Site Log Errors ---")
+    cmd_logs_summary()
+
+    print("\n" + "=" * 60)
+    print("  END OF REPORT")
+    print("=" * 60)
+
+
 def cmd_chat():
     """Interactive chat mode for terminal use."""
     print("Pleng Agent — type 'exit' to quit, '/new' to reset session\n")
@@ -273,6 +398,12 @@ def main():
         "remove": lambda: cmd_remove(rest),
         "destroy": lambda: cmd_destroy(rest),
         "promote": lambda: cmd_promote(rest),
+        "system": lambda: cmd_system(),
+        "docker-ps": lambda: cmd_docker_ps(),
+        "docker-stats": lambda: cmd_docker_stats(),
+        "errors": lambda: cmd_errors(rest),
+        "logs-summary": lambda: cmd_logs_summary(),
+        "health-report": lambda: cmd_health_report(),
         "chat": lambda: cmd_chat(),
     }
 

@@ -94,6 +94,7 @@ volumes:
 
 ## ALL `pleng` COMMANDS
 
+### Deployment & management
 ```bash
 pleng sites                              # List all sites
 pleng deploy <path> --name <name>        # Deploy a project
@@ -107,6 +108,16 @@ pleng remove <name>                      # Remove
 pleng promote <name> --domain <d>        # Add custom domain + SSL
 ```
 
+### Observability & diagnostics
+```bash
+pleng system                             # System stats: CPU, RAM, disk, load, uptime
+pleng docker-ps                          # All Docker containers on the host
+pleng docker-stats                       # CPU + RAM per running container
+pleng errors [--minutes 60]              # Recent Traefik 5xx errors
+pleng logs-summary                       # Recent errors from ALL deployed sites
+pleng health-report                      # Full system report (runs all of the above)
+```
+
 ## UPDATING A SITE
 
 1. Edit files in `/opt/pleng/projects/<name>/`
@@ -114,9 +125,13 @@ pleng promote <name> --domain <d>        # Add custom domain + SSL
 
 ## DIAGNOSING ERRORS
 
-1. `pleng logs <name>` — read Docker logs
-2. Fix the code
-3. `pleng redeploy <name>`
+1. `pleng logs <name>` — read Docker logs for a specific site
+2. `pleng logs-summary` — scan ALL sites for recent errors
+3. `pleng errors` — check Traefik for 5xx errors
+4. `pleng system` — check disk, memory, load
+5. `pleng docker-stats` — check CPU/RAM per container
+6. Fix the code
+7. `pleng redeploy <name>`
 
 ## FILES FROM THE USER
 

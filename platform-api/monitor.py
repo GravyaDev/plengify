@@ -1,9 +1,10 @@
-"""Health monitor + maintenance scheduler.
+"""Health monitor + maintenance scheduler + agent heartbeat.
 
-- Health checks: pings deployed sites every 10 min, alerts via Telegram
+- Health checks: pings deployed sites every 10 min, alerts + auto-restart via Telegram
 - Docker prune: cleans unused images/cache every 24h
-- Extensible: add more scheduled tasks as needed
+- Heartbeats: agent checks defined in heartbeat.md (quick/deep/full at different intervals)
 """
+import html
 import logging
 import os
 import subprocess
@@ -22,6 +23,10 @@ PRUNE_INTERVAL = 86400  # 24 hours
 FAILURE_THRESHOLD = 3
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+AGENT_URL = os.environ.get("AGENT_URL", "http://agent:8000")
+PROJECTS_DIR = os.environ.get("PROJECTS_DIR", "/opt/pleng/projects")
+HEARTBEAT_FILE = os.path.join(PROJECTS_DIR, "heartbeat.md")
+HEARTBEAT_DEFAULT = "/app/heartbeat.md"
 
 
 def start():
@@ -34,6 +39,17 @@ def start():
 
     threading.Thread(target=_maintenance_loop, daemon=True).start()
     logger.info(f"Maintenance scheduler started (backup + prune every 24h)")
+
+    # Copy default heartbeat.md to shared volume on first boot
+    if not os.path.exists(HEARTBEAT_FILE) and os.path.exists(HEARTBEAT_DEFAULT):
+        import shutil
+        shutil.copy2(HEARTBEAT_DEFAULT, HEARTBEAT_FILE)
+        logger.info(f"Copied default heartbeat.md to {HEARTBEAT_FILE}")
+
+    heartbeats = _load_heartbeats(HEARTBEAT_FILE)
+    for hb in heartbeats:
+        threading.Thread(target=_run_heartbeat, args=(hb,), daemon=True).start()
+        logger.info(f"Heartbeat [{hb['name']}] started (every {hb['interval_sec']}s)")
 
 
 # ── Health checks ───────────────────────────────────────
@@ -181,6 +197,108 @@ def _docker_prune():
 
     if "0B" not in freed1 or "0B" not in freed2:
         _alert(f"🧹 Docker cleanup: {freed1}, {freed2}")
+
+
+# ── Agent heartbeats (from heartbeat.md) ──────────────
+
+def _load_heartbeats(path: str) -> list[dict]:
+    """Parse heartbeat.md into list of {name, interval_sec, prompt}."""
+    try:
+        with open(path) as f:
+            content = f.read()
+    except FileNotFoundError:
+        logger.warning(f"Heartbeat file not found: {path} — no heartbeats will run")
+        return []
+
+    heartbeats = []
+    sections = content.split("\n## ")[1:]  # Skip everything before first ##
+
+    for section in sections:
+        lines = section.strip().split("\n")
+        header = lines[0]
+
+        # Parse "quick | 5m"
+        parts = header.split("|")
+        if len(parts) < 2:
+            continue
+        name = parts[0].strip()
+        interval_str = parts[1].strip()
+
+        # Parse interval: "5m" → 300, "120m" → 7200
+        try:
+            interval_sec = int(interval_str.rstrip("m")) * 60
+        except ValueError:
+            logger.warning(f"Heartbeat [{name}]: invalid interval '{interval_str}', skipping")
+            continue
+
+        prompt = "\n".join(lines[1:]).strip()
+        if not prompt:
+            continue
+
+        heartbeats.append({"name": name, "interval_sec": interval_sec, "prompt": prompt})
+        logger.info(f"Loaded heartbeat: {name} (every {interval_sec}s)")
+
+    return heartbeats
+
+
+def _run_heartbeat(hb: dict):
+    """Run a heartbeat check on its interval forever."""
+    name = hb["name"]
+    interval = hb["interval_sec"]
+    prompt = hb["prompt"]
+    # Same session as the user's Telegram chat — one single conversation thread
+    session_id = TELEGRAM_CHAT_ID or "heartbeat"
+    emoji = {"quick": "⚡", "deep": "🔍", "full": "📋"}.get(name, "🔍")
+
+    # First run: wait one full interval
+    time.sleep(interval)
+
+    while True:
+        try:
+            logger.info(f"Heartbeat [{name}] starting...")
+
+            response = _ask_agent(prompt, session_id=session_id)
+
+            if not response:
+                logger.warning(f"Heartbeat [{name}]: agent did not respond")
+            elif name == "quick" and response.strip().upper() == "OK":
+                # Quick check: silence when everything is fine
+                logger.info(f"Heartbeat [{name}]: OK")
+            else:
+                safe = html.escape(response)
+                msg = f"{emoji} <b>Heartbeat {name}</b>\n\n{safe}"
+                if len(msg) > 4000:
+                    msg = msg[:3997] + "..."
+                _alert(msg)
+                logger.info(f"Heartbeat [{name}]: reported")
+
+        except Exception as e:
+            logger.error(f"Heartbeat [{name}] error: {e}")
+
+        time.sleep(interval)
+
+
+def _ask_agent(prompt: str, session_id: str = "heartbeat") -> str | None:
+    """Send a prompt to the agent and return the response text."""
+    try:
+        r = requests.post(
+            f"{AGENT_URL}/chat",
+            json={"message": prompt, "session_id": session_id},
+            timeout=300,
+        )
+        if r.status_code == 200:
+            return r.json().get("response", "")
+        logger.error(f"Agent returned HTTP {r.status_code}: {r.text[:200]}")
+        return None
+    except requests.Timeout:
+        logger.error("Agent request timed out (300s)")
+        return None
+    except requests.ConnectionError:
+        logger.error("Cannot connect to agent — is it running?")
+        return None
+    except Exception as e:
+        logger.error(f"Agent request failed: {e}")
+        return None
 
 
 # ── Telegram ────────────────────────────────────────────

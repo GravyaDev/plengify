@@ -5,6 +5,7 @@
     One command. One VPS. You get your own cloud<br/>
     with an AI agent that deploys, monitors, and operates everything.
   </p>
+  <p align="center"><em>Powered by Claude Code — running inside a Docker container, operating your infrastructure via natural language.</em></p>
 </p>
 
 <p align="center">
@@ -31,6 +32,8 @@ Install Pleng on any VPS and you get all of this out of the box:
 |---|---|
 | **Coolify / Dokploy** — deploy apps, reverse proxy, SSL | Deploy anything via Telegram. Traefik + Let's Encrypt automatic. |
 | **Uptime Kuma** — monitoring + alerts | Health checks every 10 min. Auto-restart. Telegram alerts. |
+| **Datadog / Grafana** — observability, metrics, logs | Agent inspects CPU, RAM, disk, Docker stats, Traefik errors, container logs — all via natural language. |
+| **PagerDuty / OpsGenie** — intelligent alerting | AI-powered heartbeat: the agent reviews your system every 30 min, 1h, and 2h at increasing depth. Reports anomalies to Telegram. |
 | **OpenClaw / AI agent** — an AI that does things for you | Claude Code agent that writes code, deploys, diagnoses, operates. |
 
 ### Built for AI agents, not just humans
@@ -133,7 +136,29 @@ Pleng: [reads Docker logs]
        Want me to increase the limit?
 ```
 
-### 5. "Day-to-day operations"
+### 5. AI Heartbeat — your agent watches the server
+
+Pleng includes a heartbeat system where the AI agent periodically reviews your entire server. It's configured in a single file (`heartbeat.md`) with three check levels:
+
+| Level | Every | What it does |
+|---|---|---|
+| **Quick** | 30 min | Container status, RAM, disk, load — a quick glance. Silent if OK. |
+| **Deep** | 60 min | Reads logs from every container, checks Traefik errors, analyzes resource usage. |
+| **Full** | 120 min | Complete system audit. Everything above plus trends and recommendations. |
+
+The heartbeat runs in your **same Telegram conversation** — the agent has full context of your chat, your deploys, and the system state. It's not a dumb uptime ping; it's an AI reading your logs and telling you what's wrong.
+
+```
+⚡ Heartbeat quick
+
+Container pleng-my-app-web-1 is restarting in a loop.
+Last log: "Error: ECONNREFUSED 127.0.0.1:5432"
+→ The Postgres container is down. Run: pleng restart my-app
+```
+
+**Edit from Telegram.** The `heartbeat.md` file lives on a persistent volume. Tell the agent "edit heartbeat.md and add a MongoDB check to the full heartbeat" — it does it, and the change survives redeploys.
+
+### 6. "Day-to-day operations"
 
 ```
 You: "logs for my-app"              → Docker logs
@@ -141,9 +166,10 @@ You: "restart my-app"               → Done
 You: "stop the demo"                → Stopped
 You: "list my sites"                → All sites with URLs and status
 You: "redeploy my-app"              → Rebuild + restart
+You: "how's the server doing?"      → Full system status
 ```
 
-### 6. "Connect any AI agent"
+### 7. "Connect any AI agent"
 
 Any AI agent that can read a URL and make HTTP calls can operate your Pleng. No plugins, no integrations, no setup.
 
@@ -255,11 +281,12 @@ docker compose up -d
 
 ### Key design decisions
 
-- **Agent is isolated.** No Docker socket. Calls platform-api over HTTP. If the agent breaks, your apps keep running.
+- **Agent is sandboxed.** Claude Code runs inside a Docker container with no Docker socket, no host access, no sudo to the host. It can only affect infrastructure through the `pleng` CLI → platform-api HTTP calls. If the agent hallucinates or goes rogue, it can't break your server — it only has the tools you give it.
 - **sslip.io for staging.** `anything.YOUR-IP.sslip.io` resolves to your IP. No DNS config needed. Free. Instant.
 - **Platform-api owns Docker.** Single point of control for all container operations.
 - **SQLite, not Postgres.** Zero extra containers. One file. Enough for single-VPS scale.
-- **Health monitoring built in.** Checks every 10 min. Auto-restart on failure. Telegram alerts.
+- **Health monitoring built in.** HTTP checks every 10 min + AI heartbeat at 3 depth levels. Auto-restart on failure. Telegram alerts.
+- **Editable config from Telegram.** Both `CLAUDE.md` (agent instructions) and `heartbeat.md` (monitoring config) live on persistent volumes. Edit them from Telegram — changes survive redeploys.
 - **Your docker-compose.yml is never modified.** Pleng generates its own overlay file for Traefik labels.
 
 ## The `pleng` CLI
@@ -267,6 +294,7 @@ docker compose up -d
 Inside the agent, Claude Code has these tools:
 
 ```bash
+# Deployment & management
 pleng sites                              # List all sites
 pleng deploy <path> --name <name>        # Deploy a project
 pleng deploy-git <url> --name <name>     # Deploy from git
@@ -277,6 +305,14 @@ pleng stop <name>                        # Stop
 pleng restart <name>                     # Restart
 pleng remove <name>                      # Remove
 pleng promote <name> --domain <domain>   # Production + SSL
+
+# Observability & diagnostics
+pleng system                             # CPU, RAM, disk, load, uptime
+pleng docker-ps                          # All containers on the host
+pleng docker-stats                       # CPU + RAM per container
+pleng errors [--minutes 60]              # Recent Traefik 5xx errors
+pleng logs-summary                       # Recent errors from ALL sites
+pleng health-report                      # Full system report (all of the above)
 ```
 
 ## Why not just use Coolify?
@@ -289,6 +325,8 @@ pleng promote <name> --domain <domain>   # Production + SSL
 | Build apps from description | No | No | No | **Yes** |
 | Telegram control | No | No | No | **Yes** |
 | Auto-restart + alerts | Plugin | No | No | **Built-in** |
+| AI-powered monitoring | No | No | No | **Yes — heartbeat.md** |
+| System observability | Dashboard | Dashboard | Dashboard | **AI reads logs + metrics for you** |
 | skill.md for agents | No | No | No | **Yes** |
 | Free staging URLs | No | No | Auto | **Auto (sslip.io)** |
 | Setup | Complex | Medium | Cloud | **`docker compose up`** |

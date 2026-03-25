@@ -4,11 +4,15 @@ The single source of truth. Agent, telegram-bot, and dashboard all talk to this.
 Auth: API key auto-generated on first boot. Internal services fetch it via /internal/key.
 """
 import ipaddress
+import json
 import logging
 import os
+import re
 import shutil
+import subprocess
 import tarfile
 import tempfile
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -86,7 +90,7 @@ async def auth_middleware(request: Request, call_next):
     # Public endpoints — no auth
     if path in ("/api/health", "/skill.md", "/api/collect", "/t.js", "/api/auth/login", "/api/setup-status"):
         return await call_next(request)
-    if path == "/internal/key":
+    if path.startswith("/internal/"):
         return await call_next(request)
     if request.method == "OPTIONS":
         return await call_next(request)
@@ -123,6 +127,204 @@ def get_api_key(request: Request):
     if not _is_internal(client_ip):
         raise HTTPException(403, "Only accessible from internal network")
     return {"api_key": _api_key}
+
+
+# ── Internal observability ──────────────────────────────
+
+def _require_internal(request: Request):
+    """Raise 403 if request is not from Docker internal network."""
+    client_ip = request.client.host if request.client else ""
+    if not _is_internal(client_ip):
+        raise HTTPException(403, "Only accessible from internal network")
+
+
+@app.get("/internal/system-stats")
+def internal_system_stats(request: Request):
+    """System resources: disk, memory, load, uptime."""
+    _require_internal(request)
+
+    result = {}
+
+    # Disk usage
+    try:
+        r = subprocess.run(["df", "-h", "/"], capture_output=True, text=True, timeout=5)
+        lines = r.stdout.strip().split("\n")
+        if len(lines) >= 2:
+            parts = lines[1].split()
+            result["disk"] = {
+                "total": parts[1], "used": parts[2],
+                "available": parts[3], "percent": parts[4],
+            }
+    except Exception:
+        result["disk"] = {"error": "unavailable"}
+
+    # Memory (from /proc/meminfo — always available, no procps needed)
+    try:
+        meminfo = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2:
+                    meminfo[parts[0].rstrip(":")] = int(parts[1])  # kB
+        total = meminfo.get("MemTotal", 0) // 1024
+        available = meminfo.get("MemAvailable", 0) // 1024
+        free = meminfo.get("MemFree", 0) // 1024
+        used = total - available
+        result["memory"] = {
+            "total_mb": total, "used_mb": used,
+            "free_mb": free, "available_mb": available,
+        }
+    except Exception:
+        result["memory"] = {"error": "unavailable"}
+
+    # Load average
+    try:
+        with open("/proc/loadavg") as f:
+            parts = f.read().split()
+            result["load"] = {"1m": float(parts[0]), "5m": float(parts[1]), "15m": float(parts[2])}
+    except Exception:
+        result["load"] = {"error": "unavailable"}
+
+    # Uptime
+    try:
+        with open("/proc/uptime") as f:
+            secs = float(f.read().split()[0])
+            days = int(secs // 86400)
+            hours = int((secs % 86400) // 3600)
+            result["uptime"] = f"{days}d {hours}h"
+    except Exception:
+        result["uptime"] = "unavailable"
+
+    return result
+
+
+@app.get("/internal/docker-ps")
+def internal_docker_ps(request: Request):
+    """All Docker containers on the host."""
+    _require_internal(request)
+    try:
+        r = subprocess.run(
+            ["docker", "ps", "-a", "--format", "{{json .}}"],
+            capture_output=True, text=True, timeout=15,
+        )
+        containers = []
+        for line in r.stdout.strip().split("\n"):
+            if line.strip():
+                containers.append(json.loads(line))
+        return containers
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/internal/docker-stats")
+def internal_docker_stats(request: Request):
+    """CPU + RAM per running container."""
+    _require_internal(request)
+    try:
+        r = subprocess.run(
+            ["docker", "stats", "--no-stream", "--format", "{{json .}}"],
+            capture_output=True, text=True, timeout=15,
+        )
+        stats = []
+        for line in r.stdout.strip().split("\n"):
+            if line.strip():
+                stats.append(json.loads(line))
+        return stats
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/internal/logs-summary")
+def internal_logs_summary(request: Request):
+    """Recent errors/warnings from all deployed sites."""
+    _require_internal(request)
+    error_pattern = re.compile(r"(error|exception|traceback|fatal|panic|critical)", re.IGNORECASE)
+    summary = {}
+
+    for site in db.get_all_sites():
+        if site["status"] not in ("staging", "production"):
+            continue
+        try:
+            logs = deployer.docker_logs(site["id"], lines=50)
+            if not logs:
+                continue
+            errors = [line for line in logs.split("\n") if error_pattern.search(line)]
+            if errors:
+                summary[site["name"]] = errors[-20:]  # Last 20 error lines max
+        except Exception:
+            continue
+
+    return summary
+
+
+@app.get("/internal/traefik-errors")
+def internal_traefik_errors(request: Request, minutes: int = 60):
+    """5xx errors from Traefik access log in the last N minutes."""
+    _require_internal(request)
+    log_path = "/var/log/traefik/access.log"
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+
+    total = 0
+    errors_5xx = 0
+    by_domain: dict[str, int] = {}
+    recent_errors: list[dict] = []
+
+    try:
+        if not os.path.exists(log_path):
+            return {"total_requests": 0, "errors_5xx": 0, "error_rate": "0%",
+                    "by_domain": {}, "recent_errors": []}
+
+        # Read only the last 2MB of the file to avoid loading huge logs into memory
+        with open(log_path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 2 * 1024 * 1024))
+            if f.tell() > 0:
+                f.readline()  # Skip partial first line
+            content = f.read().decode("utf-8", errors="replace")
+        lines = content.split("\n")
+
+        for line in lines:
+            try:
+                entry = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+            # Parse timestamp
+            ts_str = entry.get("time", "")
+            try:
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                continue
+
+            if ts < cutoff:
+                continue
+
+            total += 1
+            status = int(entry.get("DownstreamStatus", entry.get("status", 0)))
+
+            if status >= 500:
+                errors_5xx += 1
+                domain = entry.get("RequestHost", entry.get("request", {}).get("host", "unknown"))
+                by_domain[domain] = by_domain.get(domain, 0) + 1
+                recent_errors.append({
+                    "time": ts_str,
+                    "domain": domain,
+                    "path": entry.get("RequestPath", entry.get("request", {}).get("path", "")),
+                    "status": status,
+                })
+
+    except Exception as e:
+        return {"error": str(e)}
+
+    error_rate = f"{(errors_5xx / total * 100):.1f}%" if total > 0 else "0%"
+    return {
+        "total_requests": total,
+        "errors_5xx": errors_5xx,
+        "error_rate": error_rate,
+        "by_domain": by_domain,
+        "recent_errors": recent_errors[-50:],  # Last 50 errors max
+    }
 
 
 # ── Auth ─────────────────────────────────────────────────
