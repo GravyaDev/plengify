@@ -1,45 +1,42 @@
 # Pleng Heartbeat
 
-Cada sección define un nivel de check. monitor.py lee este archivo
-y programa los checks automáticamente. El agente ejecuta los comandos
-y reporta por Telegram.
+Each section defines a check level. monitor.py reads this file
+and schedules checks automatically. The agent runs the commands
+and reports via Telegram.
 
 ## quick | 30m
 
-Ejecuta:
+Run:
 1. `pleng docker-ps`
 2. `pleng system`
 
-Si TODO está normal (containers running, RAM <90%, disco <85%, load razonable),
-responde SOLO con: "OK"
+If everything is normal (containers running, RAM <90%, disk <85%, reasonable load),
+respond ONLY with: "OK"
 
-Si algo está mal, explica qué en 1-2 líneas y recomienda acción.
-Sé extremadamente conciso. Esto se ejecuta cada 5 minutos.
-Responde en español.
+If something is wrong, explain what in 1-2 lines and recommend an action.
+Be extremely concise. This runs every 5 minutes.
 
 ## deep | 60m
 
-Ejecuta:
+Run:
 1. `pleng docker-ps`
 2. `pleng docker-stats`
 3. `pleng system`
 4. `pleng errors --minutes 30`
 5. `pleng logs-summary`
 
-Analiza uso de recursos por container, errores recientes, y anomalías en logs.
-Da un resumen de 2-3 líneas. Si hay algo inusual, detalla qué y por qué.
-Si todo está bien, confirma con un resumen breve.
-Responde en español.
+Analyze resource usage per container, recent errors, and log anomalies.
+Give a 2-3 line summary. If something is unusual, detail what and why.
+If everything is fine, confirm with a brief summary.
 
 ## full | 120m
 
-Ejecuta:
+Run:
 1. `pleng health-report`
 
-Revisa a fondo: recursos del sistema, estado de todos los containers,
-errores de Traefik, logs de todos los sites desplegados.
+Review in depth: system resources, all container states,
+Traefik errors, logs from all deployed sites.
 
-Da un informe completo del estado del sistema.
-Incluye tendencias si notas patrones (ej: memoria subiendo, errores recurrentes).
-Responde SIEMPRE aunque todo esté bien — esto es la auditoría completa.
-Responde en español.
+Give a complete system status report.
+Include trends if you notice patterns (e.g., memory rising, recurring errors).
+ALWAYS respond even if everything is fine — this is the full audit.
