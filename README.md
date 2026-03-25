@@ -263,33 +263,37 @@ docker compose up -d
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                      Your VPS                        │
-│                                                      │
-│  ┌──────────┐  ┌─────────────┐  ┌───────────────┐  │
-│  │ Traefik  │  │ Platform    │  │    Agent       │  │
-│  │ (proxy)  │  │ API         │  │ (Claude Code)  │  │
-│  │ SSL/HTTP │  │ Docker sock │  │ pleng CLI      │  │
-│  │ sslip.io │  │ SQLite      │  │ /projects vol  │  │
-│  └──────────┘  └─────────────┘  └───────────────┘  │
-│       ▲              ▲                  │            │
-│       │         ┌────┘──────────────────┘            │
-│       │         │  HTTP (internal network)            │
-│  ┌──────────┐  ┌─────────────┐  ┌───────────────┐  │
-│  │ Telegram │  │  Health     │  │  Dashboard    │  │
-│  │ Bot      │  │  Monitor    │  │  (React)      │  │
-│  └──────────┘  └─────────────┘  └───────────────┘  │
-│                                                      │
-│  + your deployed apps (each in its own containers)   │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│                       Your VPS                        │
+│                                                       │
+│  ┌──────────┐  ┌──────────────┐  ┌────────────────┐ │
+│  │ Traefik  │  │ Platform API │  │     Agent      │ │
+│  │ (proxy)  │  │ Docker sock  │  │ (Claude Code)  │ │
+│  │ SSL/HTTP │  │ SQLite       │  │  pleng CLI     │ │
+│  │ sslip.io │  │ Health mon.  │  │  /projects vol │ │
+│  └──────────┘  │ Backups      │  └────────────────┘ │
+│       ▲        │ Analytics    │         │            │
+│       │        └──────────────┘         │            │
+│       │               ▲                 │            │
+│       │               │   HTTP (internal network)    │
+│       │               │                 │            │
+│  ┌──────────┐         │         ┌───────────────┐   │
+│  │ Telegram │─────────┘         │  Dashboard    │   │
+│  │   Bot    │                   │   (React)     │   │
+│  └──────────┘                   └───────────────┘   │
+│                                                       │
+│  + your deployed apps (each in its own containers)    │
+└──────────────────────────────────────────────────────┘
 ```
+
+**5 containers. One `docker compose up`.**
 
 | Container | What it does |
 |---|---|
 | **traefik** | Reverse proxy. Free staging URLs via sslip.io. HTTPS via Let's Encrypt for production. |
-| **platform-api** | Orchestrates Docker. REST API. State in SQLite. Serves skill.md. Health monitoring. |
+| **platform-api** | Orchestrates Docker. REST API. SQLite state. Health monitoring. Backups. Analytics (Traefik logs). |
 | **agent** | Claude Code with `pleng` CLI. Writes code, deploys, diagnoses. Isolated — no Docker socket. |
-| **telegram-bot** | Bridges Telegram ↔ agent. Sends alerts for site health. |
+| **telegram-bot** | Bridges Telegram ↔ agent. Sends health alerts. |
 | **dashboard** | React web panel. Sites, logs, status. Read-only — all operations via agent. |
 
 ### Key design decisions
