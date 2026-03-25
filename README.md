@@ -46,7 +46,9 @@ Install Pleng on any VPS and you get all of this out of the box:
 | **Coolify / Dokploy** — deploy apps, reverse proxy, SSL | Deploy anything via Telegram. Traefik + Let's Encrypt automatic. |
 | **Uptime Kuma** — monitoring + alerts | Health checks every 10 min. Auto-restart. Telegram alerts. |
 | **Datadog / Grafana** — observability, metrics, logs | Agent inspects CPU, RAM, disk, Docker stats, Traefik errors, container logs — all via natural language. |
-| **PagerDuty / OpsGenie** — intelligent alerting | AI-powered heartbeat: the agent reviews your system every 30 min, 1h, and 2h at increasing depth. Reports anomalies to Telegram. |
+| **PagerDuty / OpsGenie** — intelligent alerting | AI-powered heartbeat: the agent reviews your system at increasing depth. Reports anomalies to Telegram. |
+| **Plausible / analytics** — traffic monitoring | Built-in analytics from Traefik access logs. Pageviews, visitors, top pages, sources. Zero-install. |
+| **Restic / backup tools** — automated backups | Daily automatic backups of Pleng state (DB + site configs). Keeps last 7 days. Telegram notification. For full data (app databases, uploads), use your VPS provider's snapshots. |
 | **OpenClaw / AI agent** — an AI that does things for you | Claude Code agent that writes code, deploys, diagnoses, operates. |
 
 ### Built for AI agents, not just humans
