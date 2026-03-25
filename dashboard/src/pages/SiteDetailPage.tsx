@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { ExternalLink, ArrowUpCircle, ArrowLeft, Box, Clock, HardDrive } from 'lucide-react'
+import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
 import { api } from '../lib/api'
 import { statusColors, cn, formatDate } from '../lib/utils'
 
@@ -177,14 +178,19 @@ export default function SiteDetailPage() {
               {analytics.top_pages?.length > 0 && (
                 <div className="bg-surface-800 rounded-xl p-4 border border-gray-700/50">
                   <h4 className="text-sm font-medium mb-3">Top Pages</h4>
-                  <div className="space-y-1">
-                    {analytics.top_pages.map((p: any) => (
-                      <div key={p.path} className="flex justify-between text-xs p-2 bg-surface-900/50 rounded">
-                        <span className="text-gray-300 font-mono">{p.path}</span>
-                        <span className="text-gray-500">{p.views} views · {p.visitors} visitors</span>
-                      </div>
-                    ))}
-                  </div>
+                  <ResponsiveContainer width="100%" height={Math.max(180, analytics.top_pages.length * 32)}>
+                    <BarChart data={analytics.top_pages} layout="vertical" margin={{ left: 10, right: 20 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
+                      <XAxis type="number" tick={{ fontSize: 11, fill: '#9ca3af' }} />
+                      <YAxis type="category" dataKey="path" tick={{ fontSize: 11, fill: '#d1d5db' }} width={150} />
+                      <Tooltip
+                        contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: 8, fontSize: 12 }}
+                        labelStyle={{ color: '#e5e7eb' }}
+                      />
+                      <Bar dataKey="views" name="Views" fill="#6366f1" radius={[0, 4, 4, 0]} />
+                      <Bar dataKey="visitors" name="Visitors" fill="#22d3ee" radius={[0, 4, 4, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
                 </div>
               )}
 
@@ -205,14 +211,19 @@ export default function SiteDetailPage() {
               {analytics.daily?.length > 0 && (
                 <div className="bg-surface-800 rounded-xl p-4 border border-gray-700/50">
                   <h4 className="text-sm font-medium mb-3">Daily Traffic</h4>
-                  <div className="space-y-1">
-                    {analytics.daily.map((d: any) => (
-                      <div key={d.date} className="flex justify-between text-xs p-2 bg-surface-900/50 rounded">
-                        <span className="text-gray-400">{d.date}</span>
-                        <span className="text-gray-500">{d.pageviews} views · {d.visitors} visitors</span>
-                      </div>
-                    ))}
-                  </div>
+                  <ResponsiveContainer width="100%" height={220}>
+                    <AreaChart data={analytics.daily.map((d: any) => ({ ...d, date: d.date.slice(5) }))}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                      <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#9ca3af' }} />
+                      <YAxis tick={{ fontSize: 11, fill: '#9ca3af' }} width={35} />
+                      <Tooltip
+                        contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: 8, fontSize: 12 }}
+                        labelStyle={{ color: '#e5e7eb' }}
+                      />
+                      <Area type="monotone" dataKey="pageviews" name="Pageviews" stroke="#6366f1" fill="#6366f1" fillOpacity={0.15} strokeWidth={2} />
+                      <Area type="monotone" dataKey="visitors" name="Visitors" stroke="#22d3ee" fill="#22d3ee" fillOpacity={0.1} strokeWidth={2} />
+                    </AreaChart>
+                  </ResponsiveContainer>
                 </div>
               )}
             </>
