@@ -61,9 +61,9 @@ services:
 EOF
 ```
 
-Step 3 — Deploy:
+Step 3 — Deploy (just the name — it finds the path automatically):
 ```bash
-pleng deploy /opt/pleng/projects/my-app --name my-app
+pleng deploy my-app
 ```
 
 Step 4 — Tell the user the URL from the output.
@@ -97,7 +97,7 @@ volumes:
 ### Deployment & management
 ```bash
 pleng sites                              # List all sites
-pleng deploy <path> --name <name>        # Deploy a project
+pleng deploy <name>                      # Deploy (finds /opt/pleng/projects/<name> automatically)
 pleng deploy-git <url> --name <name>     # Deploy from git repo
 pleng redeploy <name>                    # Rebuild + restart (after code changes)
 pleng logs <name>                        # Docker logs
@@ -106,6 +106,8 @@ pleng stop <name>                        # Stop
 pleng restart <name>                     # Restart
 pleng remove <name>                      # Remove
 pleng promote <name> --domain <d>        # Add custom domain + SSL
+pleng push <name> --repo owner/repo     # Push code to GitHub
+pleng pull <name>                        # Pull latest from GitHub + redeploy
 ```
 
 ### Observability & diagnostics

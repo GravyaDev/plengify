@@ -79,24 +79,32 @@ def cmd_sites():
 
 
 def cmd_deploy(args: list[str]):
+    # Support both:
+    #   pleng deploy my-app                    (name only — auto-finds path)
+    #   pleng deploy /path/to/dir --name app   (explicit path)
     name = _flag(args, "--name") or _flag(args, "-n")
-    path = args[0] if args and not args[0].startswith("-") else "."
+    first_arg = args[0] if args and not args[0].startswith("-") else None
+
+    # If no --name flag, first arg IS the name
+    if not name and first_arg:
+        name = first_arg
+        first_arg = None  # no explicit path
 
     if not name:
-        print("Error: --name required")
+        print("Error: pleng deploy <name>")
         sys.exit(1)
 
-    # Resolve to absolute path
-    abs_path = os.path.abspath(path)
-
-    # If it's a directory, look for docker-compose.yml
-    compose_path = abs_path
-    if os.path.isdir(abs_path):
-        compose_file = os.path.join(abs_path, "docker-compose.yml")
-        if os.path.exists(compose_file):
-            compose_path = compose_file
+    # Resolve path: explicit path > PROJECTS_DIR/name > current dir
+    projects_dir = os.environ.get("PROJECTS_DIR", "/opt/pleng/projects")
+    if first_arg:
+        compose_path = os.path.abspath(first_arg)
+    else:
+        # Auto-find by name
+        by_name = os.path.join(projects_dir, name)
+        if os.path.isdir(by_name):
+            compose_path = by_name
         else:
-            compose_path = abs_path  # deploy_compose handles directories too
+            compose_path = os.path.abspath(".")
 
     result = _post("/api/deploy/compose", {"name": name, "compose_path": compose_path})
     _print_result(result)
@@ -205,6 +213,30 @@ def cmd_promote(args: list[str]):
         print("Error: pleng promote <name> --domain <domain>"); sys.exit(1)
     result = _post(f"/api/sites/{name}/promote", {"domain": domain})
     _print_result(result)
+
+
+def cmd_push(args: list[str]):
+    name = args[0] if args else ""
+    repo = _flag(args, "--repo") or _flag(args, "-r")
+    message = _flag(args, "--message") or _flag(args, "-m") or "Deploy from Pleng"
+    if not name or not repo:
+        print("Error: pleng push <name> --repo owner/repo"); sys.exit(1)
+    result = _post(f"/api/sites/{name}/push-git", {"repo": repo, "message": message})
+    if result.get("ok"):
+        print(f"Pushed to {result.get('repo', repo)}")
+    else:
+        print(f"Failed: {result.get('error', result.get('detail', result))}")
+
+
+def cmd_pull(args: list[str]):
+    name = args[0] if args else ""
+    if not name:
+        print("Error: pleng pull <name>"); sys.exit(1)
+    result = _post(f"/api/sites/{name}/pull-git")
+    if "error" in result or "detail" in result:
+        print(f"Failed: {result.get('error', result.get('detail', ''))}")
+    else:
+        _print_result(result)
 
 
 def cmd_system():
@@ -398,6 +430,8 @@ def main():
         "remove": lambda: cmd_remove(rest),
         "destroy": lambda: cmd_destroy(rest),
         "promote": lambda: cmd_promote(rest),
+        "push": lambda: cmd_push(rest),
+        "pull": lambda: cmd_pull(rest),
         "system": lambda: cmd_system(),
         "docker-ps": lambda: cmd_docker_ps(),
         "docker-stats": lambda: cmd_docker_stats(),

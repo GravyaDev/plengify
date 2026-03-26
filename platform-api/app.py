@@ -355,6 +355,10 @@ class DeployGit(BaseModel):
 class PromoteSite(BaseModel):
     domain: str
 
+class PushGit(BaseModel):
+    repo: str  # e.g. "mutonby/pleng-site"
+    message: str = "Deploy from Pleng"
+
 
 # ── Deploy endpoints ────────────────────────────────────
 
@@ -557,6 +561,117 @@ def api_promote(site_id: str, body: PromoteSite):
         raise HTTPException(404)
     try:
         return deployer.promote(site["id"], body.domain)
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/sites/{site_id}/push-git")
+def api_push_git(site_id: str, body: PushGit):
+    """Push a site's code to a GitHub repo."""
+    site = db.get_site(site_id) or db.get_site_by_name(site_id)
+    if not site:
+        raise HTTPException(404)
+    workspace = deployer._resolve_workspace(site)
+    token = os.environ.get("GITHUB_TOKEN", "")
+    if not token:
+        raise HTTPException(400, "GITHUB_TOKEN not configured")
+
+    try:
+        repo = body.repo
+        parts = repo.split("/")
+        if len(parts) == 2:
+            org, name = parts
+        else:
+            raise HTTPException(400, "repo must be 'owner/name'")
+
+        clone_url = f"https://x-access-token:{token}@github.com/{repo}.git"
+
+        # Create repo if it doesn't exist
+        headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+        resp = http_requests.post(
+            f"https://api.github.com/orgs/{org}/repos",
+            headers=headers,
+            json={"name": name, "private": True, "auto_init": False},
+            timeout=15,
+        )
+        if resp.status_code == 404:
+            http_requests.post(
+                "https://api.github.com/user/repos",
+                headers=headers,
+                json={"name": name, "private": True, "auto_init": False},
+                timeout=15,
+            )
+
+        # Git init + add + commit + push
+        env = os.environ.copy()
+        env["GIT_AUTHOR_NAME"] = "Pleng"
+        env["GIT_AUTHOR_EMAIL"] = "pleng@automated.dev"
+        env["GIT_COMMITTER_NAME"] = "Pleng"
+        env["GIT_COMMITTER_EMAIL"] = "pleng@automated.dev"
+
+        def _git(*args):
+            r = subprocess.run(["git"] + list(args), cwd=workspace, capture_output=True, text=True, env=env, timeout=30)
+            return r
+
+        # Init if needed
+        if not os.path.exists(os.path.join(workspace, ".git")):
+            _git("init")
+            _git("branch", "-M", "main")
+
+        # Set remote
+        _git("remote", "remove", "origin")
+        _git("remote", "add", "origin", clone_url)
+
+        # Add, commit, push
+        _git("add", "-A")
+        _git("commit", "-m", body.message, "--allow-empty")
+        result = _git("push", "-u", "origin", "main", "--force")
+
+        repo_url = f"https://github.com/{repo}"
+        db.update_site(site["id"], github_url=repo_url)
+        db.add_site_log(site["id"], f"Pushed to {repo_url}")
+
+        return {"ok": True, "repo": repo_url}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/sites/{site_id}/pull-git")
+def api_pull_git(site_id: str):
+    """Pull latest code from GitHub and redeploy."""
+    site = db.get_site(site_id) or db.get_site_by_name(site_id)
+    if not site:
+        raise HTTPException(404)
+    workspace = deployer._resolve_workspace(site)
+    github_url = site.get("github_url", "")
+    if not github_url:
+        raise HTTPException(400, "No GitHub repo linked. Push first with push-git.")
+
+    token = os.environ.get("GITHUB_TOKEN", "")
+    clone_url = github_url.replace("https://github.com/", f"https://x-access-token:{token}@github.com/") + ".git"
+
+    try:
+        # Set remote URL with token
+        subprocess.run(["git", "remote", "set-url", "origin", clone_url],
+                       cwd=workspace, capture_output=True, text=True, timeout=10)
+
+        # Pull
+        r = subprocess.run(["git", "pull", "origin", "main"],
+                           cwd=workspace, capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            raise RuntimeError(f"git pull failed: {r.stderr[:200]}")
+
+        db.add_site_log(site["id"], "Pulled from GitHub")
+
+        # Redeploy
+        result = deployer.redeploy(site["id"])
+        return result
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, str(e))
 
