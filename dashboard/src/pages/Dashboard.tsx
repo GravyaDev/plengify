@@ -8,7 +8,9 @@ export default function Dashboard({ setup }: { setup: any }) {
   const [sites, setSites] = useState<any[]>([])
 
   useEffect(() => {
-    api.get('/sites').then((d) => setSites(Array.isArray(d) ? d : [])).catch(() => {})
+    api.get('/sites').then((d) => setSites(Array.isArray(d) ? d : [])).catch(() => {
+      // 401 → api.ts redirects to /login automatically
+    })
     const interval = setInterval(() => {
       api.get('/sites').then((d) => setSites(Array.isArray(d) ? d : [])).catch(() => {})
     }, 10000)
@@ -20,6 +22,15 @@ export default function Dashboard({ setup }: { setup: any }) {
   const errors = sites.filter(s => s.status === 'error').length
   const botName = setup?.telegram_bot || ''
   const telegramOk = setup?.telegram_configured || false
+
+  // Auth issue: setup says sites exist but we can't fetch them
+  const hasSitesButCantSee = setup?.sites_count > 0 && sites.length === 0
+  if (hasSitesButCantSee) {
+    // Force re-login
+    localStorage.removeItem('pleng_auth')
+    window.location.href = '/login'
+    return null
+  }
 
   // Show onboarding if no sites
   if (sites.length === 0) {
