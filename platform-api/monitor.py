@@ -119,7 +119,7 @@ def _maintenance_loop():
             if existing:
                 last_mod = os.path.getmtime(existing[-1])
                 hours_since = (time.time() - last_mod) / 3600
-                if hours_since < 12:
+                if hours_since < 24:
                     logger.info(f"Skipping backup — last one was {hours_since:.1f}h ago")
                 else:
                     _backup()
