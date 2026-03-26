@@ -395,6 +395,19 @@ Coolify is a great dashboard for deploying apps. Pleng is an AI agent that opera
 | `GITHUB_TOKEN` | — | For deploying from private repos |
 | `WEB_UI_PASSWORD` | admin | Dashboard login password |
 
+### Connect GitHub (optional)
+
+To push/pull code from GitHub, add a Personal Access Token:
+
+1. Go to [github.com/settings/tokens](https://github.com/settings/tokens) → Generate new token (classic) → select `repo` scope
+2. SSH into your VPS and add it:
+```bash
+echo "GITHUB_TOKEN=ghp_your_token_here" >> /root/pleng/.env
+cd /root/pleng && docker compose restart platform-api
+```
+
+Now you can use `pleng push` and `pleng pull` to sync code with GitHub. The token is only used by the platform API through deterministic CLI tools (`pleng push`/`pleng pull`) — the AI agent never has direct access to it.
+
 ## Troubleshooting
 
 **Bot not responding?**
