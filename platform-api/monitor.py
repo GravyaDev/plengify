@@ -265,11 +265,10 @@ def _run_heartbeat(hb: dict):
                 # Silent when everything is fine (any level)
                 logger.info(f"Heartbeat [{name}]: OK")
             else:
-                safe = html.escape(response)
-                msg = f"{emoji} <b>Heartbeat {name}</b>\n\n{safe}"
+                msg = f"{emoji} Heartbeat {name}\n\n{response}"
                 if len(msg) > 4000:
                     msg = msg[:3997] + "..."
-                _alert(msg)
+                _alert(msg, parse_mode="")
                 logger.info(f"Heartbeat [{name}]: reported")
 
         except Exception as e:
@@ -303,15 +302,27 @@ def _ask_agent(prompt: str, session_id: str = "heartbeat") -> str | None:
 
 # ── Telegram ────────────────────────────────────────────
 
-def _alert(message: str):
+def _alert(message: str, parse_mode: str = "HTML"):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         logger.info(f"Alert (no Telegram): {message}")
         return
     try:
-        requests.post(
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+
+        r = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"},
-            timeout=10,
+            json=payload, timeout=10,
         )
+        # If HTML parsing fails, retry as plain text
+        if r.status_code != 200 and parse_mode:
+            import re
+            plain = re.sub(r'<[^>]+>', '', message)
+            requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                json={"chat_id": TELEGRAM_CHAT_ID, "text": plain},
+                timeout=10,
+            )
     except Exception as e:
         logger.error(f"Telegram alert failed: {e}")

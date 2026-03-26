@@ -47,18 +47,62 @@ def _is_allowed(update: Update) -> bool:
 # ── Markdown → Telegram HTML ────────────────────────────
 
 def md_to_tg(text: str) -> str:
-    text = html.escape(text)
+    """Convert LLM markdown to Telegram HTML. Same approach as OpenClaw:
+    markdown → HTML, tables → <pre>, retry as plain text if Telegram rejects."""
+
+    # First: extract code blocks and tables before escaping HTML
+    blocks = {}
+    counter = [0]
+
+    def save_block(content, tag="pre"):
+        key = f"__BLOCK{counter[0]}__"
+        counter[0] += 1
+        blocks[key] = f"<{tag}>{html.escape(content)}</{tag}>"
+        return key
+
+    # Extract fenced code blocks
     def replace_code_block(m):
         lang = m.group(1)
         code = m.group(2)
-        return f'<pre><code class="language-{lang}">{code}</code></pre>' if lang else f'<pre>{code}</pre>'
-    text = re.sub(r'```(\w*)\n(.*?)```', replace_code_block, text, flags=re.DOTALL)
+        if lang:
+            return save_block(code, "pre")
+        return save_block(code, "pre")
+    text = re.sub(r'```\w*\n(.*?)```', lambda m: save_block(m.group(1)), text, flags=re.DOTALL)
+
+    # Extract markdown tables → pre-formatted (Telegram doesn't support tables)
+    def replace_table(m):
+        return save_block(m.group(0))
+    text = re.sub(r'(?:^\|.+\|$\n?)+', replace_table, text, flags=re.MULTILINE)
+
+    # Now escape HTML in the remaining text
+    text = html.escape(text)
+
+    # Inline code
     text = re.sub(r'`([^`\n]+)`', r'<code>\1</code>', text)
+
+    # Bold: **text**
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+
+    # Italic: *text*
     text = re.sub(r'(?<!\*)\*([^*\n]+)\*(?!\*)', r'<i>\1</i>', text)
+
+    # Strikethrough: ~~text~~
     text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text)
+
+    # Headers → bold
     text = re.sub(r'^#{1,6}\s+(.+)$', r'<b>\1</b>', text, flags=re.MULTILINE)
+
+    # Bullet lists
     text = re.sub(r'^[-•]\s+', '• ', text, flags=re.MULTILINE)
+
+    # Links: [text](url) → <a href="url">text</a>
+    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
+
+    # Restore saved blocks
+    for key, block in blocks.items():
+        text = text.replace(html.escape(key), block)
+        text = text.replace(key, block)
+
     return text
 
 
