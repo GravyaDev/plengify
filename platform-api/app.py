@@ -613,6 +613,9 @@ def api_push_git(site_id: str, body: PushGit):
             r = subprocess.run(["git"] + list(args), cwd=workspace, capture_output=True, text=True, env=env, timeout=30)
             return r
 
+        # Fix ownership issue (agent creates files as uid 1000, platform-api runs as root)
+        _git("config", "--global", "--add", "safe.directory", workspace)
+
         # Init if needed
         if not os.path.exists(os.path.join(workspace, ".git")):
             _git("init")
@@ -625,7 +628,7 @@ def api_push_git(site_id: str, body: PushGit):
         # Add, commit, push
         _git("add", "-A")
         _git("commit", "-m", body.message, "--allow-empty")
-        result = _git("push", "-u", "origin", "main", "--force")
+        result = _git("push", "-u", "origin", "main")
 
         repo_url = f"https://github.com/{repo}"
         db.update_site(site["id"], github_url=repo_url)
