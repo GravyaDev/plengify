@@ -113,7 +113,18 @@ def _maintenance_loop():
     time.sleep(300)  # Wait 5 min after startup
     while True:
         try:
-            _backup()
+            # Only backup if last one was >12h ago
+            import glob
+            existing = sorted(glob.glob(os.path.join(BACKUP_DIR, "pleng-*.tar.gz")))
+            if existing:
+                last_mod = os.path.getmtime(existing[-1])
+                hours_since = (time.time() - last_mod) / 3600
+                if hours_since < 12:
+                    logger.info(f"Skipping backup — last one was {hours_since:.1f}h ago")
+                else:
+                    _backup()
+            else:
+                _backup()
         except Exception as e:
             logger.error(f"Backup error: {e}")
         try:
