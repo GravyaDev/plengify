@@ -57,6 +57,26 @@ Install Pleng on any VPS and you get all of this out of the box:
 | **Restic / backup tools** — automated backups | Daily automatic backups of Pleng state (DB + site configs). Keeps last 7 days. Telegram notification. For full data (app databases, uploads), use your VPS provider's snapshots. |
 | **OpenClaw / AI agent** — an AI that does things for you | Claude Code agent that writes code, deploys, diagnoses, operates. |
 
+### The problem with giving AI agents access to your server
+
+Right now, if you want an AI agent (OpenClaw, Claude Code, Cursor) to deploy something, you have two bad options:
+
+1. **Give it `--skip-permissions` on your machine.** It can run any command. Deploy one app? Sure. But deploy 3? It starts conflicting ports, overwriting configs, breaking your other projects. And if it hallucinates a bad `rm -rf`, your machine pays the price.
+
+2. **Give it SSH access to a VPS.** Same problem, worse consequences. The agent has root on a server. No isolation. No rollback. No way to know what it changed.
+
+Both approaches work for a quick demo. Neither works when you have real projects running.
+
+### How Pleng solves this
+
+**Isolation.** The agent runs inside a sandboxed container. No Docker socket. No SSH. No root. It can only affect infrastructure through the `pleng` CLI, which talks to the platform API over HTTP. If the agent goes rogue, it can't break your server — it only has the tools you gave it.
+
+**Abstraction.** The agent doesn't think about ports, Traefik configs, SSL certs, or Docker networks. It says `pleng deploy` and the platform handles everything. Deploy 10 apps — each gets its own subdomain, its own containers, its own compose. No conflicts.
+
+**Scalability.** Each app is a separate Docker Compose project. They don't know about each other. You can have 20 staging sites running simultaneously, each with its own URL, and promote any of them to production with a custom domain whenever you want.
+
+**Safety.** Production sites can't be accidentally deleted — `remove` keeps their files. The agent needs explicit `--confirm yes` to permanently destroy anything. Health monitoring auto-restarts crashed containers. Daily backups protect your state.
+
 ### Built for AI agents, not just humans
 
 Coolify, Dokploy, Plausible — they're dashboards built for humans clicking buttons. They have no API that an AI agent can use. They don't understand natural language. They can't be operated programmatically.
@@ -75,7 +95,7 @@ This means you can connect **any AI agent** to your Pleng:
 
 The agent reads `skill.md`, learns the API, authenticates with the API key, and starts deploying. No plugins. No integrations. One URL.
 
-All self-hosted. All in 6 containers. All operated by talking to it.
+All self-hosted. All in 5 containers. All operated by talking to it.
 
 ### What this replaces
 
@@ -190,20 +210,15 @@ You: "redeploy my-app"              → Rebuild + restart
 You: "how's the server doing?"      → Full system status
 ```
 
-### 7. "Connect any AI agent"
+### 7. "Deploy from any agent"
 
-Any AI agent that can read a URL and make HTTP calls can operate your Pleng. No plugins, no integrations, no setup.
+Working with Claude Code, Cursor, Windsurf, OpenClaw, or any AI agent? Just paste this:
 
 ```
-# From Claude Code on your Mac:
-"read http://panel.myserver.com/skill.md and deploy this project"
-
-# From OpenClaw:
-"connect to my Pleng at http://panel.myserver.com/skill.md"
-
-# From Cursor, Windsurf, any agent:
-Same thing. Read the skill.md. Done.
+Read http://panel.YOUR-IP.sslip.io/skill.md — API key: pleng_xxx. Deploy this project.
 ```
+
+Your agent reads the skill.md, learns the API, and deploys your code to your server. No plugins. No integrations. One message.
 
 The `skill.md` is auto-generated and always up to date with your server's IP, API URL, and all available operations. The agent reads it once and knows how to:
 - Deploy from git or upload
