@@ -47,63 +47,128 @@ def _is_allowed(update: Update) -> bool:
 # ── Markdown → Telegram HTML ────────────────────────────
 
 def md_to_tg(text: str) -> str:
-    """Convert LLM markdown to Telegram HTML. Same approach as OpenClaw:
-    markdown → HTML, tables → <pre>, retry as plain text if Telegram rejects."""
+    """Convert LLM markdown to Telegram HTML.
+    Pipeline: extract protected blocks → escape HTML → apply formatting → restore blocks.
+    Follows OpenClaw's approach: always HTML parse_mode, tag-aware chunking, plain text fallback."""
 
-    # First: extract code blocks and tables before escaping HTML
-    blocks = {}
+    blocks: dict[str, str] = {}
     counter = [0]
 
-    def save_block(content, tag="pre"):
-        key = f"__BLOCK{counter[0]}__"
+    def save_block(content: str, tag: str = "pre") -> str:
+        key = f"\x00BLOCK{counter[0]}\x00"
         counter[0] += 1
         blocks[key] = f"<{tag}>{html.escape(content)}</{tag}>"
         return key
 
-    # Extract fenced code blocks
-    def replace_code_block(m):
-        lang = m.group(1)
-        code = m.group(2)
-        if lang:
-            return save_block(code, "pre")
-        return save_block(code, "pre")
-    text = re.sub(r'```\w*\n(.*?)```', lambda m: save_block(m.group(1)), text, flags=re.DOTALL)
+    # 1. Extract fenced code blocks (``` with optional language, tolerant of spacing)
+    text = re.sub(
+        r'```[ \t]*\w*[ \t]*\n(.*?)```',
+        lambda m: save_block(m.group(1)),
+        text, flags=re.DOTALL,
+    )
 
-    # Extract markdown tables → pre-formatted (Telegram doesn't support tables)
-    def replace_table(m):
-        return save_block(m.group(0))
-    text = re.sub(r'(?:^\|.+\|$\n?)+', replace_table, text, flags=re.MULTILINE)
+    # 2. Extract markdown tables → pre-formatted
+    text = re.sub(r'(?:^\|.+\|$\n?)+', lambda m: save_block(m.group(0)), text, flags=re.MULTILINE)
 
-    # Now escape HTML in the remaining text
+    # 3. Escape HTML in remaining text
     text = html.escape(text)
 
-    # Inline code
+    # 4. Inline code (before bold/italic to avoid conflicts)
     text = re.sub(r'`([^`\n]+)`', r'<code>\1</code>', text)
 
-    # Bold: **text**
-    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    # 5. Bold: **text**
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
 
-    # Italic: *text*
+    # 6. Italic: *text* (not preceded/followed by *)
     text = re.sub(r'(?<!\*)\*([^*\n]+)\*(?!\*)', r'<i>\1</i>', text)
 
-    # Strikethrough: ~~text~~
+    # 7. Strikethrough: ~~text~~
     text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text)
 
-    # Headers → bold
+    # 8. Headers → bold
     text = re.sub(r'^#{1,6}\s+(.+)$', r'<b>\1</b>', text, flags=re.MULTILINE)
 
-    # Bullet lists
+    # 9. Blockquotes: > text → <blockquote>
+    text = re.sub(
+        r'(^&gt; .+(?:\n&gt; .+)*)',
+        lambda m: '<blockquote>' + re.sub(r'^&gt; ', '', m.group(0), flags=re.MULTILINE) + '</blockquote>',
+        text, flags=re.MULTILINE,
+    )
+
+    # 10. Bullet lists
     text = re.sub(r'^[-•]\s+', '• ', text, flags=re.MULTILINE)
 
-    # Links: [text](url) → <a href="url">text</a>
+    # 11. Numbered lists: clean up "1. " → "1. " (preserve but normalize)
+    text = re.sub(r'^(\d+)\.\s+', r'\1. ', text, flags=re.MULTILINE)
+
+    # 12. Links: [text](url) → <a href="url">text</a>
     text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
 
-    # Restore saved blocks
-    for key, block in blocks.items():
-        text = text.replace(html.escape(key), block)
-        text = text.replace(key, block)
+    # 13. Wrap bare file references in <code> to prevent Telegram auto-linking
+    # (e.g. README.md → <code>README.md</code>, but skip if already inside a tag)
+    text = re.sub(
+        r'(?<![<\w/])(\b[\w./-]+\.(?:md|ts|tsx|js|jsx|py|rs|go|yaml|yml|toml|json|sh|css|html|sql|env|lock|cfg|txt|csv|xml))\b(?![^<]*>)',
+        r'<code>\1</code>',
+        text,
+    )
+
+    # 14. Restore saved blocks
+    for key, block_html in blocks.items():
+        text = text.replace(html.escape(key), block_html)
+        text = text.replace(key, block_html)
 
     return text
+
+
+def _split_html_chunks(text: str, max_len: int = 4000) -> list[str]:
+    """Split Telegram HTML into chunks, re-opening/closing tags at boundaries.
+    Ensures each chunk is valid HTML that Telegram can parse."""
+    if len(text) <= max_len:
+        return [text]
+
+    # Tags that Telegram supports
+    TAG_RE = re.compile(r'<(/?)(\w[\w-]*)(?:\s[^>]*)?>|([^<]+|<)', re.DOTALL)
+    VOID_TAGS = {'br', 'hr', 'img'}
+
+    chunks: list[str] = []
+    open_tags: list[str] = []  # stack of currently open tag names
+    current = ''
+
+    for m in TAG_RE.finditer(text):
+        token = m.group(0)
+        is_close = m.group(1) == '/'
+        tag_name = m.group(2)
+
+        # Check if adding this token would exceed the limit
+        # Account for closing tags we'd need to add
+        close_overhead = sum(len(f'</{t}>') for t in reversed(open_tags))
+        if len(current) + len(token) + close_overhead > max_len and current.strip():
+            # Close open tags in this chunk
+            for t in reversed(open_tags):
+                current += f'</{t}>'
+            chunks.append(current)
+            # Re-open tags in the next chunk
+            current = ''
+            for t in open_tags:
+                current += f'<{t}>'
+
+        current += token
+
+        # Track open/close tags
+        if tag_name and tag_name not in VOID_TAGS:
+            if is_close:
+                if open_tags and open_tags[-1] == tag_name:
+                    open_tags.pop()
+            else:
+                open_tags.append(tag_name)
+
+    # Flush remaining
+    if current.strip():
+        for t in reversed(open_tags):
+            current += f'</{t}>'
+        chunks.append(current)
+
+    return chunks or [text]
 
 
 # ── Commands ────────────────────────────────────────────
@@ -290,7 +355,7 @@ def _send_text(chat_id: str, text: str):
         return
 
     formatted = md_to_tg(text)
-    chunks = [formatted[i:i + 4000] for i in range(0, len(formatted), 4000)] if len(formatted) > 4000 else [formatted]
+    chunks = _split_html_chunks(formatted)
 
     for chunk in chunks:
         async def _do_send(c=chunk):
