@@ -131,6 +131,7 @@ services:
 networks:
   web:
     name: pleng_web
+    external: true
   internal:
 
 volumes:

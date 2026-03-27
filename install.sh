@@ -129,8 +129,10 @@ if [ "${SKIP_ENV:-}" != "true" ]; then
     PUBLIC_IP=${PUBLIC_IP:-$DETECTED_IP}
     [ -z "$PUBLIC_IP" ] && error "Public IP is required"
 
-    ask "Email for SSL certs:" ACME_EMAIL
-    [ -z "$ACME_EMAIL" ] && error "Email is required for Let's Encrypt"
+    while [ -z "${ACME_EMAIL:-}" ]; do
+        ask "Email for SSL certs:" ACME_EMAIL
+        [ -z "$ACME_EMAIL" ] && echo -e "${RED}✗${NC} Email is required for Let's Encrypt"
+    done
 
     ask "Dashboard password [auto-generated]:" WEB_UI_PASSWORD
     WEB_UI_PASSWORD=${WEB_UI_PASSWORD:-$(openssl rand -hex 8 2>/dev/null || head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' | head -c 16)}
@@ -163,6 +165,8 @@ mkdir -p ~/.claude
 
 # ── Create Docker network ──────────────────────────────
 
+# pleng_web must exist before compose starts — it's shared with
+# user-deployed containers, so it must survive `docker compose down`.
 docker network create pleng_web 2>/dev/null || true
 
 # ── Start Pleng ────────────────────────────────────────
@@ -213,6 +217,7 @@ ok "Authentication complete"
 
 PASS=$(grep WEB_UI_PASSWORD .env | cut -d= -f2)
 IP=$(grep PUBLIC_IP .env | cut -d= -f2)
+API_KEY=$(docker compose exec -T platform-api python -c "import database as db; print(db.get_or_create_api_key())" 2>/dev/null || echo "run: curl -s -X POST http://panel.${IP}.sslip.io/api/auth/login -d '{\"password\":\"${PASS}\"}' | jq -r .api_key")
 
 echo ""
 header "═══════════════════════════════════════════════"
@@ -221,6 +226,10 @@ header "════════════════════════
 echo ""
 echo -e "  ${BOLD}Dashboard:${NC}  http://panel.${IP}.sslip.io"
 echo -e "  ${BOLD}Password:${NC}   ${PASS}"
+echo -e "  ${BOLD}API Key:${NC}    ${API_KEY}"
+echo -e "               Use this to connect external agents to your Pleng API."
+echo -e "               Details: http://panel.${IP}.sslip.io/skill.md"
+echo ""
 echo -e "  ${BOLD}Telegram:${NC}   Message your bot — say \"hello\""
 echo ""
 echo -e "  ${BOLD}Useful commands:${NC}"

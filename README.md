@@ -40,6 +40,7 @@ Or if you prefer doing it manually:
 ```bash
 git clone https://github.com/mutonby/pleng && cd pleng
 cp .env.example .env  # add your tokens
+docker network create pleng_web
 docker compose up -d
 ```
 
@@ -327,6 +328,7 @@ docker compose up -d
 - **SQLite, not Postgres.** Zero extra containers. One file. Enough for single-VPS scale.
 - **Health monitoring built in.** HTTP checks every 10 min + AI heartbeat at 3 depth levels. Auto-restart on failure. Telegram alerts.
 - **Editable config from Telegram.** Both `CLAUDE.md` (agent instructions) and `heartbeat.md` (monitoring config) live on persistent volumes. Edit them from Telegram — changes survive redeploys.
+- **`pleng_web` is an external network.** Created once (by the installer or manually) and marked `external: true` in docker-compose.yml. User-deployed apps join this network so Traefik can route to them. Because it's external, `docker compose down` never removes it — your deployed sites stay connected even when you restart Pleng itself.
 - **Your docker-compose.yml is never modified.** Pleng generates its own overlay file for Traefik labels.
 
 ## The `pleng` CLI
@@ -424,6 +426,10 @@ Now you can use `pleng push` and `pleng pull` to sync code with GitHub. The toke
 - Verify your domain's DNS A record points to your VPS IP
 - Check `docker compose logs traefik` for Let's Encrypt errors
 - `ACME_EMAIL` must be a real email (not example.com)
+
+**`network pleng_web was found but has incorrect label`?**
+- The `pleng_web` network must exist before running `docker compose up`. Create it manually: `docker network create pleng_web`
+- If you already ran compose without it, stop everything (`docker compose down`), remove the stale network (`docker network rm pleng_web`), create it fresh, and start again.
 
 **Agent says "starting up"?**
 - The agent waits for platform-api to be ready. Give it 30 seconds.
