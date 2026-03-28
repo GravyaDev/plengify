@@ -4,9 +4,10 @@
 - Docker prune: cleans unused images/cache every 24h
 - Heartbeats: agent checks defined in heartbeat.md (quick/deep/full at different intervals)
 """
-import html
+import html as _html
 import logging
 import os
+import re as _re
 import subprocess
 import threading
 import time
@@ -17,6 +18,52 @@ import database as db
 import deployer
 
 logger = logging.getLogger("monitor")
+
+
+# ── Markdown → Telegram HTML (lightweight copy for heartbeat messages) ──
+
+def _md_to_tg(text: str) -> str:
+    """Convert markdown to Telegram HTML."""
+    blocks: dict[str, str] = {}
+    counter = [0]
+
+    def _save(content: str, tag: str = "pre") -> str:
+        key = f"\x00BLK{counter[0]}\x00"
+        counter[0] += 1
+        blocks[key] = f"<{tag}>{_html.escape(content)}</{tag}>"
+        return key
+
+    # Fenced code blocks
+    text = _re.sub(r'```[ \t]*\w*[ \t]*\n(.*?)```', lambda m: _save(m.group(1)), text, flags=_re.DOTALL)
+    # Tables
+    text = _re.sub(r'(?:^\|.+\|$\n?)+', lambda m: _save(m.group(0)), text, flags=_re.MULTILINE)
+    # Escape HTML
+    text = _html.escape(text)
+    # Inline code
+    text = _re.sub(r'`([^`\n]+)`', r'<code>\1</code>', text)
+    # Bold
+    text = _re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text, flags=_re.DOTALL)
+    # Italic
+    text = _re.sub(r'(?<!\*)\*([^*\n]+)\*(?!\*)', r'<i>\1</i>', text)
+    # Strikethrough
+    text = _re.sub(r'~~(.+?)~~', r'<s>\1</s>', text)
+    # Headers → bold
+    text = _re.sub(r'^#{1,6}\s+(.+)$', r'<b>\1</b>', text, flags=_re.MULTILINE)
+    # Blockquotes
+    text = _re.sub(
+        r'(^&gt; .+(?:\n&gt; .+)*)',
+        lambda m: '<blockquote>' + _re.sub(r'^&gt; ', '', m.group(0), flags=_re.MULTILINE) + '</blockquote>',
+        text, flags=_re.MULTILINE,
+    )
+    # Bullets
+    text = _re.sub(r'^[-•]\s+', '• ', text, flags=_re.MULTILINE)
+    # Links
+    text = _re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
+    # Restore blocks
+    for key, blk in blocks.items():
+        text = text.replace(_html.escape(key), blk)
+        text = text.replace(key, blk)
+    return text
 
 CHECK_INTERVAL = int(os.environ.get("MONITOR_INTERVAL", "600"))  # 10 minutes
 PRUNE_INTERVAL = 86400  # 24 hours
@@ -276,10 +323,11 @@ def _run_heartbeat(hb: dict):
                 # Silent when everything is fine (any level)
                 logger.info(f"Heartbeat [{name}]: OK")
             else:
-                msg = f"{emoji} Heartbeat {name}\n\n{response}"
+                raw = f"{emoji} Heartbeat {name}\n\n{response}"
+                msg = _md_to_tg(raw)
                 if len(msg) > 4000:
                     msg = msg[:3997] + "..."
-                _alert(msg, parse_mode="")
+                _alert(msg, parse_mode="HTML")
                 logger.info(f"Heartbeat [{name}]: reported")
 
         except Exception as e:
