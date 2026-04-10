@@ -1,89 +1,41 @@
 services:
-  # ── Reverse Proxy ─────────────────────────────────────
-  traefik:
-    image: traefik:v3.6
-    restart: unless-stopped
-    command:
-      - "--api.insecure=true"   # Only accessible from localhost (port not exposed)
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--providers.docker.network=pleng_web"
-      - "--entrypoints.web.address=:80"
-      - "--entrypoints.websecure.address=:443"
-      - "--certificatesresolvers.letsencrypt.acme.httpchallenge=true"
-      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
-      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:-admin@example.com}"
-      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
-      - "--accesslog=true"
-      - "--accesslog.filepath=/var/log/traefik/access.log"
-      - "--accesslog.format=json"
-      - "--accesslog.fields.headers.names.User-Agent=keep"
-      - "--accesslog.fields.headers.names.Referer=keep"
-      - "--accesslog.bufferingsize=50"
-    ports:
-      - "80:80"
-      - "443:443"
-      - "127.0.0.1:8080:8080"  # Traefik dashboard — localhost only
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - letsencrypt:/letsencrypt
-      - traefik_logs:/var/log/traefik
-    networks:
-      - web
-
-  # ── Platform API ──────────────────────────────────────
   platform-api:
     build: ./platform-api
     restart: unless-stopped
     environment:
-      - PUBLIC_IP=${PUBLIC_IP:-127.0.0.1}
-      - BASE_DOMAIN=${BASE_DOMAIN:-}
-      - WEB_UI_PASSWORD=${WEB_UI_PASSWORD:-admin}
-      - DATABASE_PATH=/data/pleng.db
-      - PROJECTS_DIR=${PROJECTS_PATH:-/opt/pleng/projects}
-      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - 'PUBLIC_IP=${PUBLIC_IP}'
+      - 'BASE_DOMAIN=${BASE_DOMAIN}'
+      - 'WEB_UI_PASSWORD=${WEB_UI_PASSWORD:-admin}'
+      - 'DATABASE_PATH=/data/pleng.db'
+      - 'PROJECTS_DIR=/opt/pleng/projects'
+      - 'GITHUB_TOKEN=${GITHUB_TOKEN}'
+      - 'TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}'
+      - 'TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}'
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${PROJECTS_PATH:-/opt/pleng/projects}:${PROJECTS_PATH:-/opt/pleng/projects}
+      - /opt/pleng/projects:/opt/pleng/projects
       - /opt/pleng/backups:/opt/pleng/backups
       - platform_data:/data
-      - traefik_logs:/var/log/traefik:ro
-    networks:
-      - web
-      - internal
     healthcheck:
       test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/api/health', timeout=3)"]
       interval: 5s
       timeout: 3s
       retries: 10
       start_period: 10s
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.services.platform-api.loadbalancer.server.port=8000"
-      # sslip.io routing — higher priority than dashboard
-      - "traefik.http.routers.platform-api.rule=Host(`panel.${PUBLIC_IP:-127.0.0.1}.sslip.io`) && (PathPrefix(`/api`) || Path(`/skill.md`))"
-      - "traefik.http.routers.platform-api.entrypoints=web"
-      - "traefik.http.routers.platform-api.service=platform-api"
-      - "traefik.http.routers.platform-api.priority=100"
 
-  # ── AI Agent ──────────────────────────────────────────
   agent:
     build: ./agent
     restart: unless-stopped
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - CLAUDE_AUTH_MODE=${CLAUDE_AUTH_MODE:-oauth}
-      - MODEL_NAME=${MODEL_NAME:-claude-sonnet-4-20250514}
-      - PLATFORM_API_URL=http://platform-api:8000
-      - PROJECTS_DIR=${PROJECTS_PATH:-/opt/pleng/projects}
+      - 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:?API key required}'
+      - 'CLAUDE_AUTH_MODE=${CLAUDE_AUTH_MODE:-oauth}'
+      - 'MODEL_NAME=${MODEL_NAME:-claude-sonnet-4-20250514}'
+      - 'PLATFORM_API_URL=http://platform-api:8000'
+      - 'PROJECTS_DIR=/opt/pleng/projects'
     volumes:
-      - ${PROJECTS_PATH:-/opt/pleng/projects}:${PROJECTS_PATH:-/opt/pleng/projects}
-      - ~/.claude:/home/claude/.claude
-      - ~/.claude.json:/tmp/.claude.json.host:ro
-    networks:
-      - internal
+      - /opt/pleng/projects:/opt/pleng/projects
+      - /root/.claude:/home/claude/.claude
+      - /root/.claude.json:/tmp/.claude.json.host:ro
     depends_on:
       platform-api:
         condition: service_healthy
@@ -94,47 +46,29 @@ services:
       retries: 5
       start_period: 15s
 
-  # ── Telegram Bot ──────────────────────────────────────
   telegram-bot:
     build: ./telegram-bot
     restart: unless-stopped
     environment:
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
-      - AGENT_URL=http://agent:8000
-      - PLATFORM_API_URL=http://platform-api:8000
-      - PROJECTS_DIR=${PROJECTS_PATH:-/opt/pleng/projects}
+      - 'TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:?Token required}'
+      - 'TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:?Chat ID required}'
+      - 'AGENT_URL=http://agent:8000'
+      - 'PLATFORM_API_URL=http://platform-api:8000'
+      - 'PROJECTS_DIR=/opt/pleng/projects'
     volumes:
-      - ${PROJECTS_PATH:-/opt/pleng/projects}:${PROJECTS_PATH:-/opt/pleng/projects}
-    networks:
-      - internal
+      - /opt/pleng/projects:/opt/pleng/projects
     depends_on:
       agent:
         condition: service_healthy
 
-  # ── Dashboard ─────────────────────────────────────────
   dashboard:
     build: ./dashboard
     restart: unless-stopped
-    networks:
-      - web
     depends_on:
       platform-api:
         condition: service_healthy
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.services.dashboard.loadbalancer.server.port=80"
-      - "traefik.http.routers.dashboard.rule=Host(`panel.${PUBLIC_IP:-127.0.0.1}.sslip.io`)"
-      - "traefik.http.routers.dashboard.entrypoints=web"
-      - "traefik.http.routers.dashboard.service=dashboard"
-
-networks:
-  web:
-    name: pleng_web
-    external: true
-  internal:
+    ports:
+      - '8080:80'
 
 volumes:
-  platform_data:
-  letsencrypt:
-  traefik_logs:
+  platform_data: null
